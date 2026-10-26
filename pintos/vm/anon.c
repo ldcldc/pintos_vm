@@ -58,4 +58,8 @@ anon_swap_out (struct page *page) {
 static void
 anon_destroy (struct page *page) {
 	struct anon_page *anon_page = &page->anon;
+	
+	if (anon_page->swap_index != BITMAP_ERROR) {
+        bitmap_set (swap_bitmap, anon_page->swap_index, false); // 스왑 슬롯 비우기
+    }
 }

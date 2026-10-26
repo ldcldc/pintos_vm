@@ -822,8 +822,8 @@ static bool
 lazy_load_segment (struct page *page, void *aux) {
 	struct segment_aux *s_aux = (struct segment_aux *) aux;
     /* file offset에서 page_read_bytes만큼 kva로 read */
-    if (file_read_at (s_aux->file, page->frame->kva, s_aux->page_read_bytes, s_aux->offset) 
-            != (int) s_aux->page_read_bytes) {
+    if (file_read_at (s_aux->file, page->frame->kva, s_aux->page_read_bytes, s_aux->offset) != (int) s_aux->page_read_bytes) {
+		file_close (s_aux->file); 
         free (s_aux);
         return false;
     }
@@ -831,6 +831,7 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* page_zero_bytes 초기화 */
 	memset (page->frame->kva + s_aux->page_read_bytes, 0, s_aux->page_zero_bytes);
 
+	file_close (s_aux->file);
     free (s_aux);
     return true;
 }
@@ -893,7 +894,7 @@ setup_stack (struct intr_frame *if_) {
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
 	/* 스택에 VM_ANON 페이지 생성, VM_MARKER_0로 마킹 */
-	if (vm_alloc_page_with_initializer (VM_ANON | VM_MARKER_0, stack_bottom, true, NULL, NULL)) {
+	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
         /* 바로 프레임 할당 후 rsp연결 */
         if(vm_claim_page (stack_bottom)) {
             if_->rsp = USER_STACK;
