@@ -5,6 +5,7 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include "threads/vaddr.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -35,11 +36,12 @@ page_get_type (struct page *page) {
 }
 
 /* Helpers */
-static struct frame *vm_get_victim (void);
+static struct frame *vm_get_victim (void); 
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
 static unsigned page_hash (const struct hash_elem *e, void *aux UNUSED);
 static bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);
+static void destructor (struct hash_elem *e, void *aux UNUSED);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -107,12 +109,12 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
     struct page round_down_page;
     round_down_page.va = pg_round_down (va);
     /* hash_find로 탐색 */
-    struct hash_elem *e = hash_find (&spt->hash, &round_down_page.hash_elem);
-    if (e == NULL){
+    struct hash_elem *h_e = hash_find (&spt->hash, &round_down_page.hash_elem);
+    if (h_e == NULL){
         return NULL;
 	}
 
-	return hash_entry (e, struct page, hash_elem);
+	return hash_entry (h_e, struct page, hash_elem);
 }
 
 /* Insert PAGE into spt with validation. */
@@ -152,7 +154,7 @@ vm_evict_frame (void) {
  * space.*/
 static struct frame *
 vm_get_frame (void) {
-	struct frame *frame = malloc(sizeof(struct frame));
+	struct frame *frame = malloc(sizeof(*frame));
 	if (frame == NULL) {
 		return NULL;
 	}
@@ -316,10 +318,13 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
     }
     return true;
 }
+static void destructor (struct hash_elem *e, void *aux UNUSED) {
+    struct page *page = hash_entry (e, struct page, hash_elem);
+    vm_dealloc_page (page);
+}
 
 /* Free the resource hold by the supplemental page table */
 void
-supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
-	/* TODO: Destroy all the supplemental_page_table hold by thread and
-	 * TODO: writeback all the modified contents to the storage. */
+supplemental_page_table_kill (struct supplemental_page_table *spt) {
+    hash_clear (&spt->hash, destructor);
 }
