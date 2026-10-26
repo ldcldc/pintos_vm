@@ -5,14 +5,14 @@
             "name": "debug_pintos",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/pintos/userprog/build/kernel.o",
-            "cwd": "${workspaceFolder}/pintos/userprog/build",
+            "program": "${workspaceFolder}/pintos/vm/build/kernel.o",
+            "cwd": "${workspaceFolder}/pintos/vm/build",
             "MIMode": "gdb",
             "targetArchitecture": "x64",
             "miDebuggerPath": "/usr/bin/gdb",
-            "miDebuggerServerAddress": "127.0.0.1:1234",
+            "miDebuggerServerAddress": "127.0.0.1:57391",
             "debugServerPath": "/usr/bin/python3",
-            "debugServerArgs": "-u \"${workspaceFolder}/.vscode/pintos-debug.py\" ${input:testName}",
+            "debugServerArgs": "-u \"${workspaceFolder}/.vscode/pintos-debug.py\"",
             "serverStarted": "Pintos GDB server ready",
             "serverLaunchTimeout": 20000,
             "filterStdout": true,
@@ -22,10 +22,16 @@
             },
             "customLaunchSetupCommands": [
                 {
-                    "text": "-file-exec-and-symbols \"${workspaceFolder}/pintos/userprog/build/kernel.o\""
+                    "text": "-file-exec-and-symbols \"${workspaceFolder}/pintos/vm/build/kernel.o\""
                 },
                 {
-                    "text": "-target-select remote 127.0.0.1:1234"
+                    "text": "-target-select remote 127.0.0.1:57391"
+                },
+                {
+                    "text": "-interpreter-exec console \"source ${workspaceFolder}/.vscode/pintos-gdb.py\""
+                },
+                {
+                    "text": "-interpreter-exec console \"pintos-sequence ${workspaceFolder}/pintos/vm/build/debug/session.json\""
                 }
             ],
             "launchCompleteCommand": "exec-continue",
@@ -34,32 +40,6 @@
             "internalConsoleOptions": "openOnSessionStart",
             "preLaunchTask": "Build Pintos",
             "postDebugTask": "Show Pintos test result"
-        }
-    ],
-    "inputs": [
-        {
-            "id": "testName",
-            "type": "pickString",
-            "description": "실행할 Pintos 테스트 케이스를 선택하세요",
-            "options": [
-                "args-none",
-                "args-single",
-                "args-multiple",
-                "halt",
-                "exit",
-                "write-normal",
-                "write-bad-ptr",
-                "read-normal",
-                "create-normal",
-                "open-normal",
-                "close-normal",
-                "exec-once",
-                "exec-arg",
-                "wait-simple",
-                "fork-once",
-                "fork-boundary"
-            ],
-            "default": "args-none"
         }
     ]
 }

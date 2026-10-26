@@ -111,7 +111,7 @@ sys_file_lock_release (void) {
 /* 주소 == NULL or 유저영역 X or 페이지 테이블(pml4)연결 확인  */
 static void 
 check_address (void *addr) {
-    if (addr == NULL || !is_user_vaddr (addr) || pml4_get_page (thread_current ()->pml4, addr) == NULL) {
+    if (addr == NULL || !is_user_vaddr (addr) || spt_find_page (&thread_current ()->spt, addr) == NULL) {
         sys_exit (-1); 
     }
 }

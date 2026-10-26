@@ -36,7 +36,7 @@ page_get_type (struct page *page) {
 }
 
 /* Helpers */
-static struct frame *vm_get_victim (void); 
+static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
 static unsigned page_hash (const struct hash_elem *e, void *aux UNUSED);
@@ -194,7 +194,13 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	/* spt에 있는지 확인 */
 	struct page *page = spt_find_page (spt, addr);
 	if (page == NULL) {
-		PANIC("스택늘리기");
+		return false;
+		/* 스택인지확인 */
+		if (true) {
+			PANIC("스택늘리기");
+		}
+
+		return false;
 	}
 
    if (write && !page->writable){
