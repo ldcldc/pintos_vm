@@ -3,6 +3,8 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include <hash.h>
+#include "threads/vaddr.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -64,9 +66,17 @@ err:
 struct page *
 spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
 	struct page *page = NULL;
-	/* TODO: Fill this function. */
+	struct hash_elem *hash_elem2; 
 
+	page->va = pg_round_down(va);
+	/* TODO: Fill this function. */
+	hash_elem2 = hash_find (&spt->hash, &page->hash_elem);
+	page = hash_entry(hash_elem2, struct page, hash_elem);
+    if (page != NULL){
 	return page;
+	}
+	else
+	return NULL;
 }
 
 /* Insert PAGE into spt with validation. */
@@ -75,7 +85,10 @@ spt_insert_page (struct supplemental_page_table *spt UNUSED,
 		struct page *page UNUSED) {
 	int succ = false;
 	/* TODO: Fill this function. */
-
+	if(page->addr != hash_find (&spt->hash, &page->hash_elem)){
+		hash_insert(&spt->hash, &page->hash_elem);
+		succ = true;
+	}
 	return succ;
 }
 
@@ -112,7 +125,13 @@ static struct frame *
 vm_get_frame (void) {
 	struct frame *frame = NULL;
 	/* TODO: Fill this function. */
+	frame = malloc(sizeof *frame);
+	if (frame == NULL) {
+		return NULL;
+	}
 
+	frame->kva = palloc_get_page(PAL_USER);
+	frame->page = NULL;
 	ASSERT (frame != NULL);
 	ASSERT (frame->page == NULL);
 	return frame;
@@ -153,7 +172,10 @@ bool
 vm_claim_page (void *va UNUSED) {
 	struct page *page = NULL;
 	/* TODO: Fill this function */
-
+	page = spt_find_page(&thread_current()->spt, va);
+	if(page == NULL){
+		return false;
+	}
 	return vm_do_claim_page (page);
 }
 
@@ -161,10 +183,14 @@ vm_claim_page (void *va UNUSED) {
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
-
+	if(frame == NULL){
+	return false;
+	}
 	/* Set links */
 	frame->page = page;
 	page->frame = frame;
+    pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable);
+
 
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
 
@@ -174,6 +200,22 @@ vm_do_claim_page (struct page *page) {
 /* Initialize new supplemental page table */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+	hash_init(spt->hash, page_hash, page_less, NULL);
+}
+
+unsigned
+page_hash (const struct hash_elem *p_, void *aux UNUSED) {
+  const struct page *p = hash_entry (p_, struct page, hash_elem);
+  return hash_bytes (&p->addr, sizeof p->addr);
+}
+
+bool
+page_less (const struct hash_elem *a_,
+           const struct hash_elem *b_, void *aux UNUSED) {
+  const struct page *a = hash_entry (a_, struct page, hash_elem);
+  const struct page *b = hash_entry (b_, struct page, hash_elem);
+
+  return a->addr < b->addr;
 }
 
 /* Copy supplemental page table from src to dst */
