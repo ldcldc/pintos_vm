@@ -95,7 +95,6 @@ sys_copy_file_list (struct thread *child, struct thread *parent) {
             child->file_list[i] = NULL;
         }
     }
-
     return true;
 }
 

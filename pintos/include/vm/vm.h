@@ -47,7 +47,7 @@ struct page {
 	struct frame *frame;   		/* Back reference for frame */
 	struct hash_elem hash_elem; /* hash_elem */
 
-	bool rw;					/* rw == false => only readable */
+	bool writable;					/* writable == false => only readable */
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -59,6 +59,14 @@ struct page {
 		struct page_cache page_cache;
 #endif
 	};
+};
+
+/* lazy_load_segment에서 사용할 aux */
+struct segment_aux {
+    struct file *file;      	/* 읽어올 파일 */
+    off_t offset;           	/* 오프셋 */
+    size_t page_read_bytes; 	/* 파일에서 실제 읽어올 크기 (<= 4096) */
+    size_t page_zero_bytes; 	/* 0초기화할 읽고 남은 크기 */
 };
 
 /* The representation of "frame" */

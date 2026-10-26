@@ -2,6 +2,10 @@
 
 #include "vm/vm.h"
 #include "devices/disk.h"
+#include "threads/vaddr.h"
+#include <bitmap.h>
+
+static struct bitmap *swap_bitmap;
 
 /* DO NOT MODIFY BELOW LINE */
 static struct disk *swap_disk;
@@ -20,8 +24,11 @@ static const struct page_operations anon_ops = {
 /* Initialize the data for anonymous pages */
 void
 vm_anon_init (void) {
-	/* TODO: Set up the swap_disk. */
-	swap_disk = NULL;
+	swap_disk = disk_get(1, 1);
+	if (swap_disk == NULL)
+        return;
+
+	swap_bitmap = bitmap_create (disk_size (swap_disk) / (PGSIZE / DISK_SECTOR_SIZE));
 }
 
 /* Initialize the file mapping */
@@ -31,6 +38,8 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &anon_ops;
 
 	struct anon_page *anon_page = &page->anon;
+
+	anon_page->swap_index = BITMAP_ERROR;
 }
 
 /* Swap in the page by read contents from the swap disk. */
