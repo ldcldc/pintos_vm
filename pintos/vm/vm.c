@@ -63,8 +63,32 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		/* TODO: Create the page, fetch the initialier according to the VM type,
 		 * TODO: and then create "uninit" page struct by calling uninit_new. You
 		 * TODO: should modify the field after calling the uninit_new. */
-
 		/* TODO: Insert the page into the spt. */
+		struct page *page = malloc(sizeof(*page));
+		if (page == NULL)
+			goto err;
+
+		/* page type에 따라 다른 initializer 대입 */
+		switch (VM_TYPE (type)) {
+		case VM_ANON:
+			uninit_new (page, upage, init, type, aux, anon_initializer);
+			break;
+		case VM_FILE:
+			uninit_new (page, upage, init, type, aux, file_backed_initializer);
+			break;
+		default:
+			free (page);
+			goto err;
+		}
+		page->writable = writable;
+
+		/* spt에 삽입 */
+		if (!spt_insert_page (spt, page)) {
+			free (page);
+			goto err;
+		}
+
+		return true;
 	}
 err:
 	return false;
