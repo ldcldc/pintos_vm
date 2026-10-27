@@ -901,7 +901,6 @@ setup_stack (struct intr_frame *if_) {
 			return true;
 		}
 	}
-
 	return false;
 }
 #endif /* VM */

@@ -7,6 +7,8 @@
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
 
+#define MAXSTACK (1 << 20)		/* 1mb */
+
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
 void
@@ -172,8 +174,19 @@ vm_get_frame (void) {
 }
 
 /* Growing the stack. */
-static void
-vm_stack_growth (void *addr UNUSED) {
+static bool
+vm_stack_growth (void *addr) {
+    void *pg_addr = pg_round_down (addr);
+
+    if (!vm_alloc_page (VM_ANON | VM_MARKER_0, pg_addr, true)) {
+        return false;
+    }
+
+    if (!vm_claim_page (pg_addr)) {
+        return false;
+    }
+    
+    return true;
 }
 
 /* Handle the fault on write_protected page */
@@ -185,24 +198,27 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f, void *addr, 
 			bool user, bool write, bool not_present) {
-	struct supplemental_page_table *spt= &thread_current ()->spt;
+	struct thread *curr = thread_current ();
+	struct supplemental_page_table *spt= &curr->spt;
 
 	/* 유효성 확인 //이걸로 되나??? */
 	if (addr == NULL || is_kernel_vaddr (addr) || !not_present)
         return false;
 
+	/* 유저모드인지 커널모드인지에 따라 rsp설정 */
+	void *rsp = user ? f->rsp : curr->ursp;
+
 	/* spt에 있는지 확인 */
 	struct page *page = spt_find_page (spt, addr);
 	if (page == NULL) {
-		return false;
 		/* 스택인지확인 */
-		if (true) {
-			PANIC("스택늘리기");
-		}
-
+		if (addr >= rsp - 8 && addr < (void *) USER_STACK && addr >= (void *) (USER_STACK - (MAXSTACK))) {
+            return vm_stack_growth (addr);
+        }
 		return false;
 	}
 
+	/* 권한 검사 */
    if (write && !page->writable){
         return false;
    }
@@ -324,6 +340,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
     }
     return true;
 }
+
 static void destructor (struct hash_elem *e, void *aux UNUSED) {
     struct page *page = hash_entry (e, struct page, hash_elem);
     vm_dealloc_page (page);

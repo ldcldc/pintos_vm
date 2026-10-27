@@ -76,9 +76,8 @@ uninit_destroy (struct page *page) {
             free (aux);
         }
     }
+	/* file page였을 때 */
 	else if (VM_TYPE(page->uninit.type) == VM_FILE) {
 
 	}
-	/* TODO: Fill this function.
-	 * TODO: If you don't have anything to do, just return. */
 }
