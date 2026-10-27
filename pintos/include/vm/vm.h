@@ -90,6 +90,13 @@ struct supplemental_page_table {
 	struct hash *hash;
 };
 
+struct segment_aux {
+	struct file *file; /* 읽어올 파일 */
+	off_t offset; 		/* 오프셋 */
+	size_t page_read_bytes; /* 파일에서 실제 읽어올 크기 (<= 4096) */
+	size_t page_zero_bytes; /* 0초기화할 읽고 남은 크기 */
+};
+
 #include "threads/thread.h"
 void supplemental_page_table_init (struct supplemental_page_table *spt);
 bool supplemental_page_table_copy (struct supplemental_page_table *dst,
