@@ -343,7 +343,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
         struct page *src_page = hash_entry (hash_cur(&i), struct page, hash_elem);
         
 		bool success = (src_page->frame == NULL) ? page_copy_uninit (dst, src_page)
-												 : page_copy_ununinit (dst, src_page);
+												 : page_copy_initialized (dst, src_page);
 
 		if (!success){
 			return false;
