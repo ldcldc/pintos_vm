@@ -8,13 +8,15 @@
                 "${workspaceFolder}/pintos/include/lib",
                 "${workspaceFolder}/pintos/include",
                 "${workspaceFolder}/pintos/include/lib/kernel",
-                "${workspaceFolder}/pintos/include/lib/user",
                 "${workspaceFolder}/pintos/lib/kernel",
-                "${workspaceFolder}/pintos/tests/threads"
+                "${workspaceFolder}/pintos/tests/threads",
+                "${workspaceFolder}/pintos/include/lib/user",
+                "${workspaceFolder}/pintos/tests/userprog",
+                "${workspaceFolder}/pintos/tests/vm"
             ],
             "defines": [
                 "USERPROG",
-                "FILESYS" , 
+                "FILESYS",
                 "VM"
             ],
             "compilerPath": "/usr/bin/gcc",
