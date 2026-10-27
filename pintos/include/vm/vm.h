@@ -2,7 +2,7 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
-#include "kernel/hash.h"
+#include <hash.h>
 
 enum vm_type {
 	/* page not initialized */
@@ -66,7 +66,7 @@ struct page {
 #ifdef EFILESYS
 		struct page_cache page_cache;
 #endif
-	};
+	};		
 };
 
 /* The representation of "frame" */
