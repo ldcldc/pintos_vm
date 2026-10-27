@@ -5,6 +5,7 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include <hash.h>
 #include "threads/vaddr.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -219,20 +220,23 @@ vm_dealloc_page (struct page *page) {
 
 /* Claim the page that allocate on VA. */
 bool
-vm_claim_page (void *va) {
-    struct page *page = spt_find_page (&thread_current ()->spt, va);
-    if (page == NULL)
-        return false;
-    return vm_do_claim_page (page);
+vm_claim_page (void *va UNUSED) {
+	struct page *page = NULL;
+	/* TODO: Fill this function */
+	page = spt_find_page (&thread_current ()->spt, va);
+	if(page == NULL) {
+		return false;
+	}
+	return vm_do_claim_page (page);
 }
 
 /* Claim the PAGE and set up the mmu. */
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
-    if (frame == NULL)
-        return false;
-
+	if(frame == NULL) {
+		return false;
+	}
 	/* Set links */
 	frame->page = page;
 	page->frame = frame;
