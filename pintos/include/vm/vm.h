@@ -2,7 +2,7 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
-#include <hash.h>
+#include "kernel/hash.h"
 
 enum vm_type {
 	/* page not initialized */
@@ -34,11 +34,12 @@ enum vm_type {
 
 struct page_operations;
 struct thread;
+/* lazy_load_segment에서 사용할 aux */
 struct segment_aux {
-	struct file *file; /* 읽어올 파일 */
-	off_t offset; /* 오프셋 */
-	size_t page_read_bytes; /* 파일에서 실제 읽어올 크기 (<= 4096) */
-	size_t page_zero_bytes; /* 0초기화할 읽고 남은 크기 */
+	struct file *file; 			/* 읽어올 파일 */
+	off_t offset; 				/* 오프셋 */
+	size_t page_read_bytes; 	/* 파일에서 실제 읽어올 크기 (<= 4096) */
+	size_t page_zero_bytes; 	/* 0초기화할 읽고 남은 크기 */
 };
 
 #define VM_TYPE(type) ((type) & 7)
@@ -49,13 +50,12 @@ struct segment_aux {
  * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
 struct page {
 	const struct page_operations *operations;
-	void *va;              /* Address in terms of user space */
-	struct frame *frame;   /* Back reference for frame */
-	struct hash_elem hash_elem; /* Hash table element. */
-    void *addr; /* Virtual address. */
-	bool writable;
+	void *va;              		/* Address in terms of user space */
+	struct frame *frame;   		/* Back reference for frame */
+	
+	struct hash_elem hash_elem; /* hash_elem */
 
-	/* Your implementation */
+	bool writable;					/* writable == false => only readable */
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -95,7 +95,7 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
-	struct hash *hash;
+	struct hash hash;
 };
 
 #include "threads/thread.h"
