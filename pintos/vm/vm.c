@@ -52,10 +52,28 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 
 	/* Check wheter the upage is already occupied or not. */
 	if (spt_find_page (spt, upage) == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
+		struct page *page;
+		bool (*initializer)(struct page *, enum vm_type, void *) = NULL;
+
+		switch (VM_TYPE(type))
+		{
+		case VM_ANON:
+			initializer = anon_initializer;
+			break;
+		case VM_FILE:
+			initializer = file_backed_initializer;
+			break;
+		
+		default:
+			return false;
+		}
+		
+		uninit_new (page, upage, init, type, aux, initializer);
+
+		return spt_insert_page(spt, page);
+		/* TODO: Create the page, fetch the initializer according to the VM type,
 		 * TODO: and then create "uninit" page struct by calling uninit_new. You
 		 * TODO: should modify the field after calling the uninit_new. */
-
 		/* TODO: Insert the page into the spt. */
 	}
 err:
@@ -155,6 +173,13 @@ vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
 	struct page *page = NULL;
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
+	if (addr == NULL || !is_user_vaddr(addr) || !not_present)
+    	return false;
+	
+	page = spt_find_page(spt, addr);
+
+	if (page == NULL)
+        return false;
 
 	return vm_do_claim_page (page);
 }
@@ -218,11 +243,77 @@ page_less (const struct hash_elem *a_,
   return a->addr < b->addr;
 }
 
+bool
+spt_cpy_uninit (struct supplemental_page_table *dst, struct page *srcp) {
+	struct page *dstp;
+	struct segment_aux *aux, *dst_aux;
+	
+	vm_initializer *init;
+	aux = srcp->uninit.aux;
+	init = srcp->uninit.init;
+	if (aux == NULL) return false;
+	
+	dst_aux = malloc(sizeof *dst_aux);
+
+	*dst_aux = *aux;
+
+	if (dst_aux == NULL) return false;
+	
+	if (!vm_alloc_page_with_initializer(VM_ANON, srcp->va, srcp->writable, init, dst_aux)){
+		return false;
+	};
+
+	if (!vm_claim_page(srcp->va)){
+		return false;
+	};
+	dstp = spt_find_page(dst, srcp->va);
+	return true;
+
+}
+
+bool
+spt_cpy_anon (struct supplemental_page_table *dst, struct page *srcp) {
+
+	struct page *dstp;
+
+	if (!vm_alloc_page(VM_ANON, srcp->va, srcp->writable)){
+		return false;
+	};
+
+	if (!vm_claim_page(srcp->va)){
+		return false;
+	};
+	dstp = spt_find_page(dst, srcp->va);
+	memcpy(dstp->frame->kva, srcp->frame->kva, PGSIZE);
+	return true;
+}
+
 /* Copy supplemental page table from src to dst */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
-		struct supplemental_page_table *src UNUSED) {
-}
+supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED, struct supplemental_page_table *src UNUSED) {
+		struct hash_iterator i;
+		struct page *srcp;
+
+		hash_first(&i, src->hash);
+
+		while(hash_next(&i)) {
+			srcp = hash_entry(hash_cur(&i), struct page, hash_elem);
+
+			if (srcp->operations->type == VM_UNINIT){
+				if(!spt_cpy_uninit (dst, srcp)){
+					return false;
+				}
+			}
+
+			else if (srcp->operations->type == VM_ANON){
+				if(spt_cpy_anon (dst, srcp)){
+					continue;
+				}
+				else return false;
+			}
+		}
+		return true;
+	}
 
 /* Free the resource hold by the supplemental page table */
 void
