@@ -68,6 +68,7 @@ struct segment_aux {
     off_t offset;           	/* 오프셋 */
     size_t page_read_bytes; 	/* 파일에서 실제 읽어올 크기 (<= 4096) */
     size_t page_zero_bytes; 	/* 0초기화할 읽고 남은 크기 */
+	size_t num_page 			/* 이 파일에서 읽어올 페이지 수(첫 페이지만 값 넣고 나머진 0) */
 };
 
 /* The representation of "frame" */

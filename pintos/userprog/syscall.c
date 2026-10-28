@@ -18,6 +18,7 @@
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+#include "vm/file.h"
 
 struct lock file_lock;
 void syscall_entry (void);
@@ -116,41 +117,36 @@ check_address (void *addr) {
     }
 }
 
+/* 1바이트 주소 접근 유효성 check 함수 */
+static void check_access (void *addr, bool is_write) {
+    check_address (addr);
+
+    /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
+     * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
+    volatile char temp = *(volatile char *) addr; 
+
+    /* SPT 탐색 */
+    struct thread *curr = thread_current ();
+    struct page *page = spt_find_page (&curr->spt, pg_round_down (addr));
+    
+    /* spt에 없거나 권한 없는데 읽을 때 exit */
+    if (page == NULL || (!page->writable && is_write)) {
+        sys_exit (-1);
+    }
+}
+
 /* 버퍼가 속한 모든 페이지를 한 번씩 읽어서 물리 메모리에 올림(페이지 폴트 유도) */
 void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
     if (size == 0) return;
 
     char *ptr = (char *) buffer;
-    struct thread *curr = thread_current ();
-    char temp;
 
     /* 시작 주소부터 PGSIZE 간격으로 체크 */
     for (size_t i = 0; i < size; i += PGSIZE) {
-        check_address (ptr + i);
-
-        /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
-         * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
-        temp = *(volatile char *) (ptr + i);
-
-        /* SPT 탐색 */
-        void *page_addr = pg_round_down (ptr + i);
-        struct page *page = spt_find_page (&curr->spt, page_addr);
-
-        /* spt에 없거나 권한 없는데 읽을 때 exit */
-        if (page == NULL || (!page->writable && is_write)) {
-            sys_exit (-1);
-        }
+        check_access (ptr + i, is_write);
     }
     /* 버퍼 마지막 1바이트 체크 (여러 페이지에 걸쳐있을 시 대비) */
-    void *last_addr = ptr + size - 1;
-    check_address (last_addr);
-
-    temp = *(volatile char *) last_addr;
-    
-    struct page *last_page = spt_find_page (&curr->spt, pg_round_down (last_addr));
-    if (last_page == NULL || (!last_page->writable && is_write)) {
-        sys_exit (-1); 
-    }
+    check_access (ptr + size - 1, is_write);
 }
 
 /* 문자열을 1바이트씩 읽으며 검사, fault유도 */
@@ -158,25 +154,16 @@ void check_valid_str (const void *str) {
     if (str == NULL) sys_exit(-1);
     
     char *ptr = (char *) str;
-    struct thread *curr = thread_current ();
 
     /* 반복문 돌면서 1바이트씩 검사 */
     while (true) {
-        check_address (ptr);
-
-        /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
-         * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
-        char temp = *(volatile char *)ptr; 
-
-        /* 첫 글자 or 페이지 넘어갈 때 SPT 탐색 */
+        /* 첫 글자 or 페이지 넘어갈 때 check_byte_access */
         if (ptr == (char *)str || ((uint64_t)ptr % PGSIZE) == 0) {
-            if (spt_find_page (&curr->spt, pg_round_down (ptr)) == NULL) {
-                sys_exit (-1);
-            }
+            check_access (ptr, false); /* 문자열 읽기이므로 is_write는 false */
         }
 
         /* \0 나오면 break */
-        if (temp == '\0') {
+        if (*ptr == '\0') {
             break;
         }
         ptr++;
@@ -489,6 +476,47 @@ sys_close (int fd) {
     curr->file_list[fd] = NULL;
 }
 
+void *
+sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+    struct thread *curr = thread_current ();
+
+    /* offset과 addr 정렬 확인, fd, length확인 */
+     if (addr == NULL || length == 0 || fd <= 1 || fd >= curr->fd_capacity ||
+         pg_ofs(offset) != 0 || pg_ofs(addr) != 0) {
+        return NULL;
+    }
+
+    /* 유저 공간인지 확인 */
+    if (!is_user_vaddr (addr) || !is_user_vaddr (addr + length)) {
+        return NULL;
+    }
+
+    
+    struct file *file = curr->file_list[fd];
+    if (file == NULL) {
+        return NULL;
+    }
+
+    /* offset크기 확인 */
+    if (file_length(file) < offset) {
+        return NULL;
+    }
+
+    /* 이미 spt에 있는 페이지인지 확인 */
+    for (void *i = addr; i < addr + length; i += PGSIZE) {
+        if (spt_find_page (&curr->spt, i) != NULL) {
+            return NULL;
+        }
+    }
+
+    return do_mmap(addr, length, writable, curr->file_list[fd], offset);
+}
+
+void
+sys_munmap (void *addr) {
+
+}
+
 /* oldfd의 파일을 newfd에 연결 */
 static int
 sys_dup2 (int oldfd, int newfd) {
@@ -616,10 +644,22 @@ syscall_handler (struct intr_frame *f) {
 			sys_close ((int) f->R.rdi);
 			break;
 
+        case SYS_MMAP:
+            /* f->R.rdi == addr, f->R.rsi == length, f->R.rdx == writable,
+             * f->R.r10 == fd, f->R.r8 == offset */
+            f->R.rax = sys_mmap ((void *) f->R.rdi, (size_t)f->R.rsi, (int)f->R.rdx, (int)f->R.r10, (off_t)f->R.r8);
+            break;
+
+        case SYS_MUNMAP:
+            /* f->R.rdi == addr */
+            sys_munmap (f->R.rdi);
+            break;
+
         case SYS_DUP2:
             /* f->R.rdi == oldfd, f->R.rsi == newfd */
             f->R.rax = sys_dup2 ((int) f->R.rdi, (int) f->R.rsi);
             break;
+
         default:
             sys_exit(-1);
             break;

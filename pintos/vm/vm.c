@@ -6,6 +6,7 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
+#include "vm/file.h"
 
 #define MAXSTACK (1 << 20)		/* 1mb */
 
@@ -246,8 +247,9 @@ vm_claim_page (void *va) {
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
-    if (frame == NULL)
+    if (frame == NULL) {
         return false;
+	}
 
 	/* Set links */
 	frame->page = page;
