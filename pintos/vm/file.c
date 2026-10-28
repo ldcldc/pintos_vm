@@ -29,6 +29,13 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 
 	struct file_page *file_page = &page->file;
 
+    struct segment_aux *aux = (struct segment_aux *) page->uninit.aux;
+
+    file_page->file = aux->file;
+    file_page->offset = aux->offset;
+    file_page->read_bytes = aux->page_read_bytes;
+    file_page->num_page = aux->num_page;
+	
 	return true;
 }
 
@@ -53,11 +60,18 @@ file_backed_destroy (struct page *page) {
     /* dirty bit 확인 */
     if (pml4_is_dirty (curr->pml4, page->va)) {
         /* 파일에 변경 내용 write-back */
+		sys_file_lock_acquire ();
         file_write_at (file_page->file, page->va, file_page->read_bytes, file_page->offset);
-        
+        sys_file_lock_release ();
+
         /* dirty bit 지움 */
         pml4_set_dirty (curr->pml4, page->va, false);
     }
+
+	/* 이제 file_close */
+	sys_file_lock_acquire (); 
+    file_close (file_page->file);
+    sys_file_lock_release ();
 }
 
 /* Do the mmap */
@@ -81,5 +95,22 @@ do_mmap (void *addr, size_t length, int writable,
 /* Do the munmap */
 void
 do_munmap (void *addr) {
-	
+    struct thread *curr = thread_current ();
+    struct page *head_page = spt_find_page (&curr->spt, addr);
+
+    if (head_page == NULL) return;
+
+    /* unmap할 페이지 뭉치 개수 */
+    size_t num_page = head_page->file.num_page;
+
+    /* 반복문 돌면서 spt_remove_page */
+    for (size_t i = 0; i < num_page; i++) {
+        void *curr_addr = addr + (i * PGSIZE);
+        struct page *page = spt_find_page (&curr->spt, curr_addr);
+
+        if (page != NULL) {
+            /* spt 지우면서 page->operations->destroy (file_backed_destroy)호출 */
+            spt_remove_page (&curr->spt, page);
+        }
+    }
 }

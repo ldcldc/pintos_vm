@@ -131,8 +131,10 @@ struct page *
 spt_find_page (struct supplemental_page_table *spt, void *va) {
     struct page round_down_page;
     round_down_page.va = pg_round_down (va);
+
 	if (&round_down_page == NULL || &((&round_down_page)->hash_elem) == NULL)
 		return NULL;
+
     /* hash_find로 탐색 */
     struct hash_elem *h_e = hash_find (&spt->hash, &round_down_page.hash_elem);
     if (h_e == NULL){
@@ -151,6 +153,7 @@ spt_insert_page (struct supplemental_page_table *spt,
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	hash_delete (&spt->hash, &page->hash_elem);
 	vm_dealloc_page (page);
 }
 
@@ -224,7 +227,7 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	struct thread *curr = thread_current ();
 	struct supplemental_page_table *spt= &curr->spt;
 
-	/* 유효성 확인 //이걸로 되나??? */
+	/* 유효성 확인 */
 	if (addr == NULL || is_kernel_vaddr (addr) || !not_present)
         return false;
 

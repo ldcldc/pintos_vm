@@ -494,7 +494,6 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
         return NULL;
     }
 
-    
     struct file *file = curr->file_list[fd];
     if (file == NULL) {
         return NULL;
@@ -517,9 +516,18 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
 
 void
 sys_munmap (void *addr) {
-    if (pg_ofs(addr) != 0) {
-        return NULL;
+    /* addr 정렬, 유저 영역인지 검사 */
+    if (pg_ofs(addr) != 0 || !is_user_vaddr(addr)) {
+        return;
     }
+
+    struct thread *curr = thread_current ();
+    struct page *page = spt_find_page (&curr->spt, addr);
+
+    /* spt에 없거나 VM_FILE아니면 return */
+    if (page == NULL || VM_TYPE(page->operations->type) != VM_FILE) {
+        return;
+    } 
     do_munmap(addr);
 }
 
