@@ -24,7 +24,7 @@ struct lock file_lock;
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 void sys_exit (int status);
-void check_valid_buffer (const void *buffer, size_t size, bool is_write);
+static void check_valid_buffer (const void *buffer, size_t size, bool is_write);
 
 #define STDIN_FILE ((struct file *) 1)
 #define STDOUT_FILE ((struct file *) 2)
@@ -520,7 +520,7 @@ sys_munmap (void *addr) {
     if (pg_ofs(addr) != 0) {
         return NULL;
     }
-    do_unmmap(addr);
+    do_munmap(addr);
 }
 
 /* oldfd의 파일을 newfd에 연결 */
