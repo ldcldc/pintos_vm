@@ -124,8 +124,9 @@ struct page *
 spt_find_page (struct supplemental_page_table *spt, void *va) {
     struct page round_down_page;
     round_down_page.va = pg_round_down (va);
-	if (&round_down_page == NULL || &((&round_down_page)->hash_elem) == NULL)
+	if (&round_down_page == NULL || &((&round_down_page)->hash_elem) == NULL) {
 		return NULL;
+	}
     /* hash_find로 탐색 */
     struct hash_elem *h_e = hash_find (&spt->hash, &round_down_page.hash_elem);
     if (h_e == NULL){
@@ -191,7 +192,8 @@ vm_get_frame (void) {
 
 /* Growing the stack. */
 static void
-vm_stack_growth (void *addr UNUSED) {
+vm_stack_growth (void *addr) {
+	pg_round_down (addr);
 }
 
 /* Handle the fault on write_protected page */
@@ -203,28 +205,46 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f, void *addr, 
 			bool user, bool write, bool not_present) {
-	struct supplemental_page_table *spt= &thread_current ()->spt;
+	
+	uintptr_t rsp;
 
-	/* 유효성 확인 //이걸로 되나??? */
-	if (addr == NULL || is_kernel_vaddr (addr) || !not_present)
-        return false;
-
-	/* spt에 있는지 확인 */
-	struct page *page = spt_find_page (spt, addr);
-	if (page == NULL) {
-		return false;
-		/* 스택인지확인 */
-		if (true) {
-			PANIC("스택늘리기");
-		}
-
+	/* 유저 공간이 아닌경우, 접근 권한이 없는 경우 */
+	if (!is_user_vaddr(addr) || !not_present) {
 		return false;
 	}
 
-   if (write && !page->writable){
-        return false;
-   }
-	return vm_do_claim_page (page);
+	/* SPT에 존재할 경우 처리 */
+	struct page * page = spt_find_page (&(thread_current ()->spt), addr);
+	if (page != NULL) {
+		/* ~ */
+		return vm_do_claim_page (page);
+	}
+	
+	/* 스택 영역 위 매핑되지 않은 공간인 경우 */
+	if (addr > USER_STACK) {
+		return false;
+	}
+
+	/* 모드 판단. fault 발생 전이 유저 모드일 경우 f->rsp로 접근. 
+	   아닐 경우 syscall에서 스레드에 저장해둔 프레임에서 rsp 꺼내기 */
+	if (user) {
+		rsp = f->rsp;
+	}
+	else {
+		rsp = thread_current ()->ursp;
+	}
+	
+	/* 해당 주소 접근이 유효한 스택 접근으로 볼 수 없는 경우 */
+	if (addr < (rsp - 8)) {
+		return false;
+	}
+
+	if ((USER_STACK - (size_t)addr) > VM_STACK_SIZE) {
+		return false;
+	}
+
+	vm_stack_growth (addr);
+	return true;
 }
 
 /* Free the page.
@@ -240,7 +260,7 @@ bool
 vm_claim_page (void *va) {
 	/* TODO: Fill this function */
 	struct page *page = spt_find_page (&thread_current ()->spt, va);
-	if(page == NULL) {
+	if (page == NULL) {
 		return false;
 	}
 	return vm_do_claim_page (page);
@@ -251,7 +271,7 @@ vm_claim_page (void *va) {
 static bool
 vm_do_claim_page (struct page *page) {
 	struct frame *frame = vm_get_frame ();
-	if(frame == NULL) {
+	if (frame == NULL) {
 		return false;
 	}
 	/* Set links */

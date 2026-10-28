@@ -40,6 +40,7 @@ anon_initializer (struct page *page, enum vm_type type, void *kva) {
 	struct anon_page *anon_page = &page->anon;
 
 	anon_page->swap_index = BITMAP_ERROR;
+	return true;
 }
 
 /* Swap in the page by read contents from the swap disk. */

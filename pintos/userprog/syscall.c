@@ -505,7 +505,8 @@ syscall_handler (struct intr_frame *f) {
     /* 시스템 콜 번호: rax
 	 * 인자 순서 rdi, rsi, rdx, r10, r8, r9 
      */
-
+    thread_current ()->ursp = f->rsp;
+    
     switch (f->R.rax) {
         case SYS_HALT:
             sys_halt ();

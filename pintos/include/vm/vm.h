@@ -43,6 +43,7 @@ struct segment_aux {
 };
 
 #define VM_TYPE(type) ((type) & 7)
+#define VM_STACK_SIZE 1<<20
 
 /* The representation of "page".
  * This is kind of "parent class", which has four "child class"es, which are
