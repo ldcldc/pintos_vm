@@ -7,6 +7,8 @@
 #include "threads/mmu.h"
 #include "threads/malloc.h"
 
+#include "userprog/syscall.h"
+
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "vm/file.h"
@@ -308,7 +310,9 @@ page_copy_uninit (struct supplemental_page_table *dst,
 
 		/* file이 존재하는 page면 파일도 한번 더 열려야 하니 file_duplicate */
 		if (src_aux->file != NULL) {
+			sys_file_lock_acquire ();
             dst_aux->file = file_duplicate (src_aux->file);
+			sys_file_lock_release ();
             if (dst_aux->file == NULL) {
                 free (dst_aux);
                 return false;

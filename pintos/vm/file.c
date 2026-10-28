@@ -48,6 +48,16 @@ file_backed_swap_out (struct page *page) {
 static void
 file_backed_destroy (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
+    struct thread *curr = thread_current ();
+
+    /* dirty bit 확인 */
+    if (pml4_is_dirty (curr->pml4, page->va)) {
+        /* 파일에 변경 내용 write-back */
+        file_write_at (file_page->file, page->va, file_page->read_bytes, file_page->offset);
+        
+        /* dirty bit 지움 */
+        pml4_set_dirty (curr->pml4, page->va, false);
+    }
 }
 
 /* Do the mmap */
@@ -71,5 +81,5 @@ do_mmap (void *addr, size_t length, int writable,
 /* Do the munmap */
 void
 do_munmap (void *addr) {
-
+	
 }

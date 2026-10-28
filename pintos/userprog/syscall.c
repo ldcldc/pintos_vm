@@ -110,7 +110,7 @@ sys_file_lock_release (void) {
 }
 
 /* 주소 == NULL or 유저영역 X or spt연결 확인  */
-static void 
+static void
 check_address (void *addr) {
     if (addr == NULL || !is_user_vaddr (addr)) {
         sys_exit (-1); 
@@ -118,7 +118,8 @@ check_address (void *addr) {
 }
 
 /* 1바이트 주소 접근 유효성 check 함수 */
-static void check_access (void *addr, bool is_write) {
+static void
+check_access (void *addr, bool is_write) {
     check_address (addr);
 
     /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
@@ -136,7 +137,8 @@ static void check_access (void *addr, bool is_write) {
 }
 
 /* 버퍼가 속한 모든 페이지를 한 번씩 읽어서 물리 메모리에 올림(페이지 폴트 유도) */
-void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
+static void
+check_valid_buffer (const void *buffer, size_t size, bool is_write) {
     if (size == 0) return;
 
     char *ptr = (char *) buffer;
@@ -150,7 +152,8 @@ void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
 }
 
 /* 문자열을 1바이트씩 읽으며 검사, fault유도 */
-void check_valid_str (const void *str) {
+static void
+check_valid_str (const void *str) {
     if (str == NULL) sys_exit(-1);
     
     char *ptr = (char *) str;
@@ -386,7 +389,7 @@ static int
 sys_write (int fd, const void *buffer, unsigned size) {
     check_valid_buffer (buffer, size, false); 
     struct thread *curr = thread_current ();
-    
+
     init_file_list (curr);
 
     /* fd 유효성 check */
@@ -514,7 +517,10 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
 
 void
 sys_munmap (void *addr) {
-
+    if (pg_ofs(addr) != 0) {
+        return NULL;
+    }
+    do_unmmap(addr);
 }
 
 /* oldfd의 파일을 newfd에 연결 */

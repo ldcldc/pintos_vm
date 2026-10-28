@@ -821,20 +821,25 @@ static bool
 lazy_load_segment (struct page *page, void *aux) {
 	struct segment_aux *s_aux = (struct segment_aux *) aux;
     /* file offset에서 page_read_bytes만큼 kva로 read */
+	sys_file_lock_acquire ();
     if (file_read_at (s_aux->file, page->frame->kva, s_aux->page_read_bytes, s_aux->offset) != (int) s_aux->page_read_bytes) {
 		if (VM_TYPE (page->operations->type) != VM_FILE) {
             file_close (s_aux->file);
         }
+		sys_file_lock_release ();
         free (s_aux);
         return false;
     }
+	sys_file_lock_release ();
 
 	/* page_zero_bytes 초기화 */
 	memset (page->frame->kva + s_aux->page_read_bytes, 0, s_aux->page_zero_bytes);
 
 	/* VM_FILE아니면 file_close */
 	if (VM_TYPE (page->operations->type) != VM_FILE) {
+		sys_file_lock_acquire ();
 		file_close (s_aux->file);
+		sys_file_lock_release ();
 	}
 
     free (s_aux);
@@ -877,7 +882,10 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		if (aux == NULL)
             return false;
 
+		sys_file_lock_acquire ();
         aux->file = file_duplicate(file);
+		sys_file_lock_release ();
+
         aux->offset = ofs;
         aux->page_read_bytes = page_read_bytes;
         aux->page_zero_bytes = page_zero_bytes;
@@ -915,7 +923,7 @@ setup_stack (struct intr_frame *if_) {
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
-	
+
 	/* 스택에 VM_ANON 페이지 생성, VM_MARKER_0로 마킹 */
 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
         /* 바로 프레임 할당 후 rsp연결 */
