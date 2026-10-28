@@ -895,7 +895,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		read_bytes -= page_read_bytes;
 		zero_bytes -= page_zero_bytes;
 		upage += PGSIZE;
-		ofs += page_read_bytes;
+		ofs += page_read_bytes;		
 	}
 	return true;
 }
@@ -911,6 +911,11 @@ static bool
 setup_stack (struct intr_frame *if_) {
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
 
+	/* TODO: Map the stack on stack_bottom and claim the page immediately.
+	 * TODO: If success, set the rsp accordingly.
+	 * TODO: You should mark the page is stack. */
+	/* TODO: Your code goes here */
+	
 	/* 스택에 VM_ANON 페이지 생성, VM_MARKER_0로 마킹 */
 	if (vm_alloc_page (VM_ANON | VM_MARKER_0, stack_bottom, true)) {
         /* 바로 프레임 할당 후 rsp연결 */

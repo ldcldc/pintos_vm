@@ -80,4 +80,7 @@ uninit_destroy (struct page *page) {
 	else if (VM_TYPE(page->uninit.type) == VM_FILE) {
 
 	}
+	/* TODO: Fill this function.
+	 * TODO: If you don't have anything to do, just return. */
+	return;
 }
