@@ -193,7 +193,14 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr) {
-	pg_round_down (addr);
+	void *aligned_addr = pg_round_down (addr);
+	if (!vm_alloc_page (VM_ANON | VM_MARKER_0, aligned_addr, true)) {
+		return;
+	}
+
+	if (!vm_claim_page (aligned_addr)) {
+		return;
+	}
 }
 
 /* Handle the fault on write_protected page */
@@ -205,41 +212,39 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f, void *addr, 
 			bool user, bool write, bool not_present) {
-	
-	uintptr_t rsp;
-
-	/* 유저 공간이 아닌경우, 접근 권한이 없는 경우 */
-	if (!is_user_vaddr(addr) || !not_present) {
+		
+	/* NULL 포인터인 경우, 유저 공간이 아닌경우, 접근 권한이 없는 경우 */
+	if (addr == NULL || !is_user_vaddr(addr) || !not_present) {
 		return false;
 	}
 
 	/* SPT에 존재할 경우 처리 */
-	struct page * page = spt_find_page (&(thread_current ()->spt), addr);
+	struct page *page = spt_find_page (&(thread_current ()->spt), addr);
 	if (page != NULL) {
-		/* ~ */
+		/* read only page에 쓰기 접근 거부 */		
+		if (write && !page->writable) {
+			return false;
+		}
 		return vm_do_claim_page (page);
 	}
 	
 	/* 스택 영역 위 매핑되지 않은 공간인 경우 */
-	if (addr > USER_STACK) {
+	if ((uintptr_t)addr > (uintptr_t)USER_STACK) {
 		return false;
 	}
 
 	/* 모드 판단. fault 발생 전이 유저 모드일 경우 f->rsp로 접근. 
 	   아닐 경우 syscall에서 스레드에 저장해둔 프레임에서 rsp 꺼내기 */
 	if (user) {
-		rsp = f->rsp;
+		thread_current ()->ursp = f->rsp;
 	}
-	else {
-		rsp = thread_current ()->ursp;
-	}
-	
+
 	/* 해당 주소 접근이 유효한 스택 접근으로 볼 수 없는 경우 */
-	if (addr < (rsp - 8)) {
+	if ((uintptr_t)addr < (uintptr_t)(thread_current ()->ursp - 8)) {
 		return false;
 	}
 
-	if ((USER_STACK - (size_t)addr) > VM_STACK_SIZE) {
+	if (((uintptr_t)USER_STACK - (uintptr_t)addr) > (uintptr_t)VM_STACK_SIZE) {
 		return false;
 	}
 

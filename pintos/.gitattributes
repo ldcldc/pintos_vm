@@ -1,0 +1,7 @@
+# Linux entry-point scripts must retain LF line endings on Windows checkouts.
+/activate text eol=lf
+/utils/pintos text eol=lf
+/utils/pintos-mkdisk text eol=lf
+/utils/backtrace text eol=lf
+/tests/make-grade text eol=lf
+/tests/**/sample.txt text eol=lf

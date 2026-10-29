@@ -144,6 +144,10 @@ page_fault (struct intr_frame *f) {
 		return;
 #endif
 
+	if (!user && is_user_vaddr(fault_addr)) {
+		sys_exit (-1);
+	}
+
 	/* user모드에서의 page_fault면 */
     if (user) {
         sys_exit (-1);

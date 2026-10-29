@@ -110,9 +110,32 @@ sys_file_lock_release (void) {
 
 /* 주소 == NULL or 유저영역 X or 페이지 테이블(pml4)연결 확인  */
 static void 
-check_address (void *addr) {
-    if (addr == NULL || !is_user_vaddr (addr) || spt_find_page (&thread_current ()->spt, addr) == NULL) {
-        sys_exit (-1); 
+check_address (void *addr) {    
+    if (addr == NULL || !is_user_vaddr (addr)) {
+        sys_exit (-1);
+    }
+}
+
+static void
+check_valid_page (void *addr, bool is_write) {
+    check_address (addr);
+        
+    volatile char temp = *(volatile char *) (addr);
+    
+    struct page *page = spt_find_page (&thread_current ()->spt, addr);
+    if (is_write && !page->writable) {
+        sys_exit (-1);
+    }
+}
+
+static void
+check_valid_filename (char *file) {
+    check_address (file);
+    char *addr = file;
+
+    while (*addr != '\0') {
+        volatile char temp = *(volatile char *) (addr);        
+        addr += 1;
     }
 }
 
@@ -122,26 +145,11 @@ void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
 
     char *ptr = (char *) buffer;
 
-    /* 시작 주소부터 PGSIZE 간격으로 체크 */
     for (size_t i = 0; i < size; i += PGSIZE) {
-        check_address (ptr + i);
-        /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
-         * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
-        volatile char *p = (volatile char *) (ptr + i);
-        char dummy = *p;
-        /* write면 권한 체크 (SPT 페이지로 바꿔야함)*/
-        if (is_write) {
-            *p = dummy;
-        }
+        check_valid_page (ptr + i, is_write);
     }
-    /* 버퍼 마지막 1바이트 체크 (여러 페이지에 걸쳐있을 시 대비) */
-    check_address (ptr + size - 1);
     
-    volatile char *last_p = (volatile char *) (ptr + size - 1);
-    char dummy = *last_p;
-    if (is_write) {
-        *last_p = dummy;
-    }
+    check_valid_page (ptr + size - 1, is_write);
 }
 
 
@@ -222,8 +230,8 @@ sys_fork (const char *thread_name, struct intr_frame *f) {
 
 /* exec후 return 안함 실패시 return -1 */
 static int
-sys_exec (const char *file) {
-    check_address ((void *) file);
+sys_exec (const char *file) {    
+    check_valid_filename (file);
     /* 인자로 받은 파일명+인자(최대128byte)을 사용하기 전에 
      * process_exec에서 process_cleanup하는데 128바이트여도
      * 커널에 계속 쌓인다고 생각하면 배열로 저장하기에는 위험하니 malloc */
@@ -248,8 +256,8 @@ sys_wait (int pid) {
 
 /* file create(lock) */
 static bool
-sys_create (const char *file, unsigned initial_size) {
-	check_address ((void *) file);
+sys_create (const char *file, unsigned initial_size) {	
+    check_valid_filename (file);
     lock_acquire (&file_lock); 
     bool success = filesys_create (file, initial_size);
     lock_release (&file_lock);
@@ -260,8 +268,8 @@ sys_create (const char *file, unsigned initial_size) {
 
 /* file remove */
 static bool
-sys_remove (const char *file) {
-	check_address ((void *) file);
+sys_remove (const char *file) {	
+    check_valid_filename (file);
     lock_acquire (&file_lock); 
     bool success = filesys_remove (file);
     lock_release (&file_lock);
@@ -271,8 +279,8 @@ sys_remove (const char *file) {
 
 /* file open */
 static int
-sys_open (const char *file){
-	check_address ((void *) file);
+sys_open (const char *file){	
+    check_valid_filename (file);
     lock_acquire(&file_lock); 
     struct file *curr_file = filesys_open (file);
     lock_release(&file_lock);
@@ -315,7 +323,7 @@ sys_filesize (int fd) {
 /* file 데이터 read */
 static int
 sys_read (int fd, void *buffer, unsigned size) {
-    check_valid_buffer (buffer, size, false); 
+    check_valid_buffer (buffer, size, true); 
     struct thread *curr = thread_current ();
 
     init_file_list (curr);
@@ -359,7 +367,7 @@ sys_read (int fd, void *buffer, unsigned size) {
 /* file에 데이터 write */
 static int
 sys_write (int fd, const void *buffer, unsigned size) {
-    check_valid_buffer (buffer, size, true); 
+    check_valid_buffer (buffer, size, false); 
     struct thread *curr = thread_current ();
     
     init_file_list (curr);
