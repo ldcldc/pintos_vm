@@ -10,5 +10,6 @@ struct anon_page {
 
 void vm_anon_init (void);
 bool anon_initializer (struct page *page, enum vm_type type, void *kva);
+void anon_read_from_swap (size_t swap_index, void *kva);
 
 #endif

@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "userprog/process.h"
 #include "vm/file.h"
+#include "vm/vm.h"
 
 struct lock file_lock;
 void syscall_entry (void);
@@ -109,7 +110,7 @@ sys_file_lock_release (void) {
     lock_release (&file_lock);
 }
 
-/* 주소 == NULL or 유저영역 X or spt연결 확인  */
+/* 주소 == NULL or 유저영역 X 확인  */
 static void
 check_address (void *addr) {
     if (addr == NULL || !is_user_vaddr (addr)) {
@@ -122,17 +123,10 @@ static void
 check_access (void *addr, bool is_write) {
     check_address (addr);
 
-    /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
-     * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
-    volatile char temp = *(volatile char *) addr; 
-
-    /* SPT 탐색 */
     struct thread *curr = thread_current ();
-    struct page *page = spt_find_page (&curr->spt, pg_round_down (addr));
     
-    /* spt에 없거나 권한 없는데 읽을 때 exit */
-    if (page == NULL || (!page->writable && is_write)) {
-        sys_exit (-1);
+    if (!vm_claim_if_valid (&curr->spt, addr, curr->ursp, is_write)) {
+        sys_exit(-1);
     }
 }
 
