@@ -12,7 +12,6 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "vm/file.h"
-#include "vm/anon.h"
 
 #define MAXSTACK (1 << 20)		/* 1mb */
 
@@ -162,46 +161,20 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 /* Get the struct frame, that will be evicted. */
 static struct frame *
 vm_get_victim (void) {
-    struct thread *curr = thread_current ();
-    struct supplemental_page_table *spt = &curr->spt;
-    struct hash_iterator i;
+	struct frame *victim = NULL;
+	 /* TODO: The policy for eviction is up to you. */
 
-    while (true) {
-        hash_first (&i, &spt->hash);
-        while (hash_next (&i)) {
-            struct page *page = hash_entry (hash_cur(&i), struct page, hash_elem);
-            
-            if (page->frame != NULL) {
-                if (pml4_is_accessed(curr->pml4, page->va)) {
-                    pml4_set_accessed (curr->pml4, page->va, false);
-                }
-                else {
-                    return page->frame;
-                }
-            }
-        }
-    }
+	return victim;
 }
 
 /* Evict one page and return the corresponding frame.
  * Return NULL on error.*/
 static struct frame *
 vm_evict_frame (void) {
-    struct frame *victim = vm_get_victim ();
-    if (victim == NULL) {
-        return NULL;
-    }
+	struct frame *victim UNUSED = vm_get_victim ();
+	/* TODO: swap out the victim and return the evicted frame. */
 
-    if (!swap_out (victim->page)) {
-        return NULL; 
-    }
-    
-    pml4_clear_page (thread_current ()->pml4, victim->page->va);
-    
-    victim->page->frame = NULL;
-    victim->page = NULL;
-
-    return victim;
+	return NULL;
 }
 
 /* palloc() and get frame. If there is no available page, evict the page
@@ -219,12 +192,8 @@ vm_get_frame (void) {
 	/* frame 맴버에 값 대입 */
 	frame->kva = palloc_get_page (PAL_USER);
 	if (frame->kva == NULL) {
-		free (frame);
-		struct frame *victim = vm_evict_frame ();
-        if (victim == NULL) {
-            return NULL;
-        }
-        return victim; 
+
+		PANIC ("todo");
 	}
 
 	frame->page = NULL;
@@ -383,8 +352,15 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 		if (VM_TYPE (src_page->operations->type) == VM_UNINIT) {
             success = page_copy_uninit (dst, src_page);
         }
-		/* initialized page */
+        
+        /* initialized page */
         else {
+            /* 부모가 frame에 없으면 swap_in  */
+            if (src_page->frame == NULL) {
+                if (!vm_do_claim_page (src_page)) {
+                    return false;
+                }
+            }
             success = page_copy_initialized (dst, src_page);
         }
 
@@ -457,25 +433,6 @@ page_copy_initialized (struct supplemental_page_table *dst,
     if (VM_TYPE(src_page->operations->type) == VM_FILE) {
         if (!duplicate_file_page_meta (dst_page, src_page)) {
             return false;
-        }
-    }
-
-    /* 부모가 ram에 있으면 */
-    if (src_page->frame != NULL) {
-		/* 물리 frame 데이터 복사 */
-        memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
-    } 
-	/* 부모가 ram에 없으면 */
-    else {
-        if (VM_TYPE(src_page->operations->type) == VM_ANON) {
-            anon_read_from_swap (src_page->anon.swap_index, dst_page->frame->kva);
-        }
-		else if (VM_TYPE(src_page->operations->type) == VM_FILE) {
-            sys_file_lock_acquire ();
-            file_read_at (dst_page->file.file, dst_page->frame->kva, dst_page->file.read_bytes, dst_page->file.offset);
-            sys_file_lock_release ();
-
-            memset (dst_page->frame->kva + dst_page->file.read_bytes, 0, PGSIZE - dst_page->file.read_bytes);
         }
     }
 
