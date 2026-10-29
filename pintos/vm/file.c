@@ -31,10 +31,18 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 
     struct segment_aux *aux = (struct segment_aux *) page->uninit.aux;
 
-    file_page->file = aux->file;
-    file_page->offset = aux->offset;
-    file_page->read_bytes = aux->page_read_bytes;
-    file_page->num_page = aux->num_page;
+    if (aux != NULL) {
+        file_page->file = aux->file;
+        file_page->offset = aux->offset;
+        file_page->read_bytes = aux->page_read_bytes;
+        file_page->num_page = aux->num_page;
+    }
+    else {
+        file_page->file = NULL;
+        file_page->offset = 0;
+        file_page->read_bytes = 0;
+        file_page->num_page = 0;
+    }
 	
 	return true;
 }

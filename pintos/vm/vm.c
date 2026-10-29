@@ -344,11 +344,22 @@ page_copy_initialized (struct supplemental_page_table *dst,
 	if (!vm_claim_page (src_page->va))
 		return false;
 
-	/* page도 복사 */
+	/* 위에서 spt에 넣은 dst_page 탐색 */
 	struct page *dst_page = spt_find_page (dst, src_page->va);
 	if (dst_page == NULL)
         return false;
 
+    /* VM_FILE 일 때 file_page인자 복사 */
+    if (VM_TYPE(src_page->operations->type) == VM_FILE) {
+        sys_file_lock_acquire ();
+        dst_page->file.file = file_duplicate (src_page->file.file);
+        sys_file_lock_release ();
+        dst_page->file.offset = src_page->file.offset;
+        dst_page->file.read_bytes = src_page->file.read_bytes;
+        dst_page->file.num_page = src_page->file.num_page;
+    }
+
+	/* 물리 frame 데이터 복사 */
 	memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
 	return true;
 }

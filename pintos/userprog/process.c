@@ -189,6 +189,7 @@ __do_fork (void *aux) {
 
 	/* 자식 rax = 0 */
     if_.R.rax = 0;
+	
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
 	if (current->pml4 == NULL)

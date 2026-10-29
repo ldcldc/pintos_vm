@@ -63,22 +63,16 @@ uninit_initialize (struct page *page, void *kva) {
 static void
 uninit_destroy (struct page *page) {
     struct uninit_page *uninit = &page->uninit;
+    struct segment_aux *aux = (struct segment_aux *) uninit->aux;
 
-    /* anon page였을 때 */
-    if (VM_TYPE(page->uninit.type) == VM_ANON) {
-        struct segment_aux *aux = (struct segment_aux *) uninit->aux;
-
-        /* aux랑 파일이 있으면 file_close */
-        if (aux != NULL) {
-            if (aux->file != NULL) {
-                file_close (aux->file);
-            }
-            free (aux);
-        }
-    }
-	/* file page였을 때 */
-	else if (VM_TYPE(page->uninit.type) == VM_FILE) {
-
+	/* aux랑 파일이 있으면 file_close */
+	if (aux != NULL) {
+		if (aux->file != NULL) {
+			sys_file_lock_acquire ();
+			file_close (aux->file);
+			sys_file_lock_release ();
+		}
+		free (aux);
 	}
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
