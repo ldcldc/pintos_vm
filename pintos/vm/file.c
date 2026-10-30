@@ -50,13 +50,42 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 /* Swap in the page by read contents from the file. */
 static bool
 file_backed_swap_in (struct page *page, void *kva) {
-	struct file_page *file_page UNUSED = &page->file;
+	struct file_page *file_page = &page->file;
+
+    /* file_read */
+    sys_file_lock_acquire ();
+    int bytes_read = file_read_at (file_page->file, kva, file_page->read_bytes, file_page->offset);
+    sys_file_lock_release ();
+
+    if (bytes_read != (int) file_page->read_bytes) {
+        return false;
+    }
+
+    /* zero_bytes */
+    memset (kva + file_page->read_bytes, 0, PGSIZE - file_page->read_bytes);
+
+    return true;
 }
 
 /* Swap out the page by writeback contents to the file. */
 static bool
 file_backed_swap_out (struct page *page) {
-	struct file_page *file_page UNUSED = &page->file;
+	struct file_page *file_page = &page->file;
+
+    struct thread *page_owner = page->p_thread; 
+    /* Dirty Bit 확인 */
+    if (pml4_is_dirty (page_owner->pml4, page->va)) {
+        
+        /* Write-back */
+        sys_file_lock_acquire ();
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
+        sys_file_lock_release ();
+
+        /* Dirty bit = 0 */
+        pml4_set_dirty (page_owner->pml4, page->va, false);
+    }
+    
+    return true;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
@@ -69,7 +98,7 @@ file_backed_destroy (struct page *page) {
     if (pml4_is_dirty (curr->pml4, page->va)) {
         /* 파일에 변경 내용 write-back */
 		sys_file_lock_acquire ();
-        file_write_at (file_page->file, page->va, file_page->read_bytes, file_page->offset);
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
         sys_file_lock_release ();
 
         /* dirty bit 지움 */

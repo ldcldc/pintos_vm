@@ -56,6 +56,8 @@ page_get_type (struct page *page) {
 static struct page *page_create_uninit (enum vm_type type, void *upage,
 						vm_initializer *init, void *aux, bool writable);
 static struct frame *vm_get_victim (void);
+static struct frame * vm_scan_victim (void);
+static bool vm_frame_is_accessed (struct frame *frame);
 static struct frame *vm_evict_frame (void);
 static struct frame *vm_get_frame (void);
 static bool vm_handle_wp (struct page *page UNUSED);
@@ -77,7 +79,7 @@ bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
 
-	if (upage == NULL || !is_user_vaddr(upage)|| pg_ofs (upage) != 0)	//pg_ofs (upage)이것도 지금해야할까 코드 아래랑 커널베이스~스택 사이는?
+	if (upage == NULL || !is_user_vaddr(upage)|| pg_ofs (upage) != 0)	//코드영역 아래랑 커널베이스~스택 사이는?
 		goto err;
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
@@ -110,15 +112,15 @@ page_create_uninit (enum vm_type type, void *upage, vm_initializer *init, void *
 
     /* 타입별 uninit_new 세팅 */
     switch (VM_TYPE (type)) {
-    case VM_ANON:
-        uninit_new (page, upage, init, type, aux, anon_initializer);
-        break;
-    case VM_FILE:
-        uninit_new (page, upage, init, type, aux, file_backed_initializer);
-        break;
-    default:
-        free (page);
-        return NULL;
+		case VM_ANON:
+			uninit_new (page, upage, init, type, aux, anon_initializer);
+			break;
+		case VM_FILE:
+			uninit_new (page, upage, init, type, aux, file_backed_initializer);
+			break;
+		default:
+			free (page);
+			return NULL;
     }
     
     page->writable = writable;
@@ -181,30 +183,12 @@ vm_get_victim (void) {
         return NULL;
     }
 
-    /* 시계바늘이 NULL이거나 끝에 도달했으면 맨 처음으로 리셋 */
+    /* 현제 frame_elem이 NULL이거나 끝이면 */
     if (curr_frame_elem == NULL || curr_frame_elem == list_end (&frame_list)) {
         curr_frame_elem = list_begin (&frame_list);
     }
 
-	/* frame_list * 2 만큼 순회 */
-	size_t loop_count = list_size (&frame_list) * 2;
-    for (size_t i = 0; i < loop_count; i++) {
-        struct frame *curr_frame = list_entry (curr_frame_elem, struct frame, frame_elem);
-        struct page *curr_page = curr_frame->page;
-
-		if (curr_page == NULL) continue;
-
-        curr_frame_elem = list_next_circular (curr_frame_elem, &frame_list);
-        
-        uint64_t *curr_pml4 = curr_page->p_thread->pml4;
-        
-        if (pml4_is_accessed (curr_pml4, curr_page->va)) {
-            pml4_set_accessed (curr_pml4, curr_page->va, false);
-        } else {
-            victim = curr_frame;
-            break;
-        }
-    }
+	victim = vm_scan_victim ();
 
     if (victim != NULL) {
         list_remove (&victim->frame_elem);
@@ -212,6 +196,45 @@ vm_get_victim (void) {
     
     lock_release (&frame_lock);
     return victim;
+}
+
+/* accessed bit가 0인 프레임 탐색 */
+static struct frame *
+vm_scan_victim (void) {
+	/* frame_list * 2 만큼 순회 */
+    size_t loop_count = list_size (&frame_list) * 2;
+    
+    for (size_t i = 0; i < loop_count; i++) {
+        struct frame *curr_frame = list_entry (curr_frame_elem, struct frame, frame_elem);
+
+        curr_frame_elem = list_next_circular (curr_frame_elem, &frame_list);
+
+        if (curr_frame->page == NULL) {
+            continue;
+        }
+
+        if (!vm_frame_is_accessed (curr_frame)) {
+            return curr_frame;
+        }
+    }
+
+    return NULL;
+}
+
+/* frame의 accessed bit가 1이면 0으로 바꾸고 true 반환 */
+static bool
+vm_frame_is_accessed (struct frame *frame) {
+    struct page *page = frame->page;
+    if (page == NULL) {
+        return false;
+    }
+
+    uint64_t *pml4 = page->p_thread->pml4;
+    if (pml4_is_accessed (pml4, page->va)) {
+        pml4_set_accessed (pml4, page->va, false);
+        return true;
+    }
+    return false;
 }
 
 /* Evict one page and return the corresponding frame.
@@ -241,36 +264,32 @@ vm_evict_frame (void) {
 static struct frame *
 vm_get_frame (void) {
 	/* TODO: Fill this function. */
-	struct frame *frame = malloc (sizeof (struct frame));
-	if (frame == NULL) {
-		return NULL;
-	}
+    void *kva = palloc_get_page (PAL_USER);
+    struct frame *frame = NULL;
 
-	/* frame 맴버에 값 대입 */
-	frame->kva = palloc_get_page (PAL_USER);
-	if (frame->kva == NULL) {
-		free (frame);
-		struct frame *victim = vm_evict_frame ();
-        if (victim == NULL) {
+    /* palloc실패 => evict */
+    if (kva == NULL) {
+        frame = vm_evict_frame ();
+        if (frame == NULL) {
             return NULL;
         }
-
-        lock_acquire (&frame_lock);
-        list_push_back (&frame_list, &victim->frame_elem);
-        lock_release (&frame_lock);
-
-		return victim; 
-	}
-
-	frame->page = NULL;
+    } 
+    /* palloc성공 => frame할당, 초기화 */
+    else {
+        frame = malloc (sizeof (*frame));
+        if (frame == NULL) {
+            palloc_free_page (kva);
+            return NULL;
+        }
+        frame->kva = kva;
+        frame->page = NULL;
+    }
 
     lock_acquire (&frame_lock);
     list_push_back (&frame_list, &frame->frame_elem);
     lock_release (&frame_lock);
 
-	ASSERT (frame != NULL);
-	ASSERT (frame->page == NULL);
-	return frame;
+    return frame;
 }
 
 /* Handle the fault on write_protected page */
