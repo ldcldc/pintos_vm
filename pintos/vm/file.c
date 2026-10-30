@@ -76,6 +76,16 @@ file_backed_destroy (struct page *page) {
         pml4_set_dirty (curr->pml4, page->va, false);
     }
 
+    if (page->frame != NULL) {
+        vm_remove_frame_from_table (page->frame);
+
+        pml4_clear_page (thread_current ()->pml4, page->va);
+
+        palloc_free_page (page->frame->kva);
+        free (page->frame);
+        page->frame = NULL;
+    }
+
 	/* 이제 file_close */
 	sys_file_lock_acquire (); 
     file_close (file_page->file);

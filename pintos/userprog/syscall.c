@@ -118,7 +118,7 @@ check_address (void *addr) {
     }
 }
 
-/* 1바이트 주소 접근 유효성 check 함수 */
+/* 접근 유효성 check 함수 */
 static void
 check_access (void *addr, bool is_write) {
     check_address (addr);
@@ -145,14 +145,14 @@ check_valid_buffer (const void *buffer, size_t size, bool is_write) {
     check_access (ptr + size - 1, is_write);
 }
 
-/* 문자열을 1바이트씩 읽으며 검사, fault유도 */
+/* 문자열을 검사, fault유도 */
 static void
 check_valid_str (const void *str) {
     if (str == NULL) sys_exit(-1);
     
     char *ptr = (char *) str;
 
-    /* 반복문 돌면서 1바이트씩 검사 */
+    /* 반복문 돌면서 검사 */
     while (true) {
         /* 첫 글자 or 페이지 넘어갈 때 check_byte_access */
         if (ptr == (char *)str || ((uint64_t)ptr % PGSIZE) == 0) {
@@ -478,7 +478,7 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
     struct thread *curr = thread_current ();
 
     /* offset과 addr 정렬 확인, fd, length확인 */
-     if (addr == NULL || length == 0 || fd <= 1 || fd >= curr->fd_capacity ||
+    if (addr == NULL || length == 0 || fd <= 1 || fd >= curr->fd_capacity ||
          pg_ofs(offset) != 0 || pg_ofs(addr) != 0) {
         return NULL;
     }
@@ -493,8 +493,8 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
         return NULL;
     }
 
-    /* offset크기 확인 */
-    if (file_length(file) < offset) {
+    /* file길이 확인 */
+    if (0 < file_length(file) && file_length(file) < offset) {
         return NULL;
     }
 

@@ -53,8 +53,10 @@ struct page {
 	const struct page_operations *operations;
 	void *va;              		/* Address in terms of user space */
 	struct frame *frame;   		/* Back reference for frame */
-	
+
 	struct hash_elem hash_elem; /* hash_elem */
+
+	struct thread * p_thread;	/* 이 page가 속한 thread */
 
 	bool writable;				/* writable == false => only readable */
 
@@ -74,6 +76,7 @@ struct page {
 struct frame {
 	void *kva;
 	struct page *page;
+	struct list_elem frame_elem;
 };
 
 /* The function table for page operations.
@@ -122,5 +125,6 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
+void vm_remove_frame_from_table (struct frame *frame);
 
 #endif  /* VM_VM_H */
