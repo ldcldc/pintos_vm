@@ -3,6 +3,7 @@
 #include "vm/vm.h"
 #include "userprog/process.h"
 #include "threads/vaddr.h"
+#include "threads/mmu.h"
 
 static bool file_backed_swap_in (struct page *page, void *kva);
 static bool file_backed_swap_out (struct page *page);
@@ -94,6 +95,27 @@ file_backed_destroy (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
     struct thread *curr = thread_current ();
 
+    bool is_shared = false;
+    bool should_free = false;
+
+    /* 공유 상태 확인 */
+    if (page->frame != NULL) {
+        lock_acquire (&frame_lock);
+        is_shared = (list_size (&page->frame->page_list) > 1);
+        list_remove (&page->cow_elem);
+        should_free = list_empty (&page->frame->page_list);
+        lock_release (&frame_lock);
+    }
+
+    /* write back 여부 결정 */
+    if (!is_shared && pml4_is_dirty (curr->pml4, page->va)) {
+        sys_file_lock_acquire ();
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
+        sys_file_lock_release ();
+
+        pml4_set_dirty (curr->pml4, page->va, false);
+    }
+
     /* dirty bit 확인 */
     if (pml4_is_dirty (curr->pml4, page->va)) {
         /* 파일에 변경 내용 write-back */
@@ -106,19 +128,23 @@ file_backed_destroy (struct page *page) {
     }
 
     if (page->frame != NULL) {
-        vm_remove_frame_from_table (page->frame);
+        if (should_free) {
+            vm_remove_frame_from_table (page->frame);
+            palloc_free_page (page->frame->kva);
+            free (page->frame);
+        }
 
-        pml4_clear_page (thread_current ()->pml4, page->va);
+        pml4_clear_page (page->p_thread->pml4, page->va);
 
-        palloc_free_page (page->frame->kva);
-        free (page->frame);
         page->frame = NULL;
     }
 
-	/* 이제 file_close */
-	sys_file_lock_acquire (); 
-    file_close (file_page->file);
-    sys_file_lock_release ();
+    /* file_close */
+    if (file_page->file != NULL) {
+        sys_file_lock_acquire (); 
+        file_close (file_page->file);
+        sys_file_lock_release ();
+    }
 }
 
 /* Do the mmap */

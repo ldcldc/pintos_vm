@@ -43,6 +43,10 @@ struct segment_aux {
 	size_t num_page 			/* 이 파일에서 읽어올 페이지 수(첫 페이지만 값 넣고 나머진 0) */
 };
 
+extern struct list frame_list;
+extern struct lock frame_lock;
+extern struct list_elem *curr_frame_elem;
+
 #define VM_TYPE(type) ((type) & 7)
 
 /* The representation of "page".
@@ -54,6 +58,7 @@ struct page {
 	void *va;              		/* Address in terms of user space */
 	struct frame *frame;   		/* Back reference for frame */
 
+ 	struct list_elem cow_elem;	/* frame에 들어갈 cow용 elem */
 	struct hash_elem hash_elem; /* hash_elem */
 
 	struct thread * p_thread;	/* 이 page가 속한 thread */
@@ -77,6 +82,7 @@ struct frame {
 	void *kva;
 	struct page *page;
 	struct list_elem frame_elem;
+	struct list page_list;			/* 이 frame을 공유하는 page list(cow) */
 };
 
 /* The function table for page operations.
@@ -115,7 +121,7 @@ void spt_remove_page (struct supplemental_page_table *spt, struct page *page);
 void vm_init (void);
 bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 		bool write, bool not_present);
-bool vm_claim_if_valid (struct supplemental_page_table *spt, void *addr,
+bool vm_claim_if_valid (struct supplemental_page_table *spt, struct page *page, void *addr,
 		void *rsp, bool write);
 
 #define vm_alloc_page(type, upage, writable) \

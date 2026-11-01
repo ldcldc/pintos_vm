@@ -193,7 +193,7 @@ vm_get_victim (void) {
     if (victim != NULL) {
         list_remove (&victim->frame_elem);
     }
-    
+
     lock_release (&frame_lock);
     return victim;
 }
@@ -224,17 +224,20 @@ vm_scan_victim (void) {
 /* frame의 accessed bit가 1이면 0으로 바꾸고 true 반환 */
 static bool
 vm_frame_is_accessed (struct frame *frame) {
-    struct page *page = frame->page;
-    if (page == NULL) {
-        return false;
-    }
+    bool accessed = false;
 
-    uint64_t *pml4 = page->p_thread->pml4;
-    if (pml4_is_accessed (pml4, page->va)) {
-        pml4_set_accessed (pml4, page->va, false);
-        return true;
+    struct list_elem *e;
+    for (e = list_begin (&frame->page_list); e != list_end (&frame->page_list); e = list_next (e)) {
+        struct page *p = list_entry (e, struct page, cow_elem);
+        uint64_t *pml4 = p->p_thread->pml4;
+
+        if (pml4_is_accessed (pml4, p->va)) {
+            pml4_set_accessed (pml4, p->va, false);
+            accessed = true;
+        }
     }
-    return false;
+    
+    return accessed;
 }
 
 /* Evict one page and return the corresponding frame.
@@ -246,13 +249,30 @@ vm_evict_frame (void) {
         return NULL;
     }
 
-    if (!swap_out (victim->page)) {
+    /* cow로 여러 페이지가 공유중이어도 페이지 하나만 swap out */
+    struct page *front_page = list_entry (list_front (&victim->page_list), struct page, cow_elem);
+    if (!swap_out (front_page)) {
         return NULL; 
     }
+
+    /* 연결 다 끊고, front_page 스왑 위치 공유 */
+    while (!list_empty (&victim->page_list)) {
+        struct list_elem *e = list_pop_front (&victim->page_list);
+        struct page *page = list_entry (e, struct page, cow_elem);
+        
+        pml4_clear_page (page->p_thread->pml4, page->va);
+        
+        /* list 순회하면서 page수 만큼 swap_ref_inc*/
+        if (page != front_page && VM_TYPE(page->operations->type) == VM_ANON) {
+            page->anon.swap_index = front_page->anon.swap_index;
+            swap_ref_inc (page->anon.swap_index);
+        }
+        
+        page->frame = NULL;
+    }
     
-    pml4_clear_page (victim->page->p_thread->pml4, victim->page->va);
-    
-    victim->page->frame = NULL;
+    list_init (&victim->page_list);
+    victim->page = NULL;
 
     return victim;
 }
@@ -289,17 +309,49 @@ vm_get_frame (void) {
     list_push_back (&frame_list, &frame->frame_elem);
     lock_release (&frame_lock);
 
+    list_init (&frame->page_list);
+
     return frame;
 }
 
 /* Handle the fault on write_protected page */
 static bool
-vm_handle_wp (struct page *page UNUSED) {
+vm_handle_wp (struct page *page) {
+    struct frame *share_frame = page->frame;
+        
+    /* 해당 프래임을 공유하고있으면 */
+    if (list_size (&share_frame->page_list) > 1) {
+		lock_acquire (&frame_lock);
+        list_remove (&page->cow_elem);
+        lock_release (&frame_lock);
+        
+        /* get_frame후 memcpy */
+        struct frame *private_frame = vm_get_frame ();
+        if (private_frame == NULL) {
+			return false;
+		}
+        
+        memcpy (private_frame->kva, share_frame->kva, PGSIZE);
+        
+        page->frame = private_frame;
+        private_frame->page = page;
+
+        list_push_back (&private_frame->page_list, &page->cow_elem);
+        
+        /* pml4에 frame이랑 writable 변경 */
+        pml4_set_page (thread_current ()->pml4, page->va, private_frame->kva, true);
+    } 
+    /* 공유 안하고있으면 */
+    else {        
+        /* pml4에 writable 변경 */
+        pml4_set_page (thread_current ()->pml4, page->va, share_frame->kva, true);
+    }
+    
+    return true;
 }
 
 bool
-vm_claim_if_valid (struct supplemental_page_table *spt, void *addr, void *rsp, bool write) {
-	struct page *page = spt_find_page (spt, addr);
+vm_claim_if_valid (struct supplemental_page_table *spt, struct page *page, void *addr, void *rsp, bool write) {
 	if (page == NULL) {
 		/* 스택인지, 늘릴 수 있는지 확인 */
 		if (addr >= rsp - 8 && addr < (void *) USER_STACK && addr >= (void *) (USER_STACK - (MAXSTACK))) {
@@ -349,14 +401,24 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	struct thread *curr = thread_current ();
 	struct supplemental_page_table *spt= &curr->spt;
 
-	/* 유효성 확인 */
-	if (addr == NULL || is_kernel_vaddr (addr) || !not_present)
+    if (addr == NULL || is_kernel_vaddr (addr))
         return false;
+
+	struct page *page = spt_find_page (spt, addr);
+
+    /* ram에 있는 주소에서의 fault면 */
+	if (!not_present) {
+		/* writable에 쓰려고 하면 */
+		if (page != NULL && page->writable && write) {
+			return vm_handle_wp (page);
+		}
+    	return false;
+	}
 
 	/* 유저모드인지 커널모드인지에 따라 rsp설정 */
 	void *rsp = user ? f->rsp : curr->ursp;
 
-	return vm_claim_if_valid(spt, addr, rsp, write);
+	return vm_claim_if_valid(spt, page, addr, rsp, write);
 }
 
 /* Free the page.
@@ -391,12 +453,23 @@ vm_do_claim_page (struct page *page) {
 	frame->page = page;
 	page->frame = frame;
 
+    list_push_back (&frame->page_list, &page->cow_elem);
+
 	/* pml4에 입력 */
 	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
         return false;
 	}
 
-	return swap_in (page, frame->kva);
+    /* 실패 시 frame반환 */
+    if (!swap_in (page, frame->kva)) {
+        vm_remove_frame_from_table (frame);
+        palloc_free_page (frame->kva);
+        free (frame);
+        page->frame = NULL;
+        return false;
+    }
+
+    return true;
 }
 
 /* Initialize new supplemental page table */
@@ -501,43 +574,62 @@ duplicate_segment_aux (struct segment_aux *src_aux) {
 /* uninit page말고 copy할 때 */
 static bool
 page_copy_initialized (struct supplemental_page_table *dst,
-		struct page *src_page) {
-	if (!vm_alloc_page_immediate (src_page->operations->type, src_page->va, src_page->writable)) {
+        struct page *src_page) {
+    if (!vm_alloc_page (src_page->operations->type, src_page->va, src_page->writable)) {
+        return false;
+    }
+
+	/* 방금 spt에 넣은 dst_page 탐색 */
+    struct page *dst_page = spt_find_page (dst, src_page->va);
+    if (dst_page == NULL) {
 		return false;
 	}
 
-	/* 위에서 spt에 넣은 dst_page 탐색 */
-	struct page *dst_page = spt_find_page (dst, src_page->va);
-	if (dst_page == NULL)
-        return false;
-
-    /* VM_FILE 일 때 file_page맴버 복사 */
+	/* VM_FILE 일 때 file_page맴버 복사 */
     if (VM_TYPE(src_page->operations->type) == VM_FILE) {
         if (!duplicate_file_page_meta (dst_page, src_page)) {
             return false;
         }
     }
 
-    /* 부모가 ram에 있으면 */
+    /* 부모가 ram에 있으면 cow */
     if (src_page->frame != NULL) {
-		/* 물리 frame 데이터 복사 */
-        memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+        /* pml4수정해서 dirty날아가기 전에 write back */
+        if (VM_TYPE(src_page->operations->type) == VM_FILE && pml4_is_dirty (src_page->p_thread->pml4, src_page->va)) {
+            sys_file_lock_acquire ();
+            file_write_at (src_page->file.file, src_page->frame->kva, src_page->file.read_bytes, src_page->file.offset);
+            sys_file_lock_release ();
+            
+            pml4_set_dirty (src_page->p_thread->pml4, src_page->va, false);
+        }
+
+		lock_acquire (&frame_lock);
+		list_push_back (&src_page->frame->page_list, &dst_page->cow_elem);
+		dst_page->frame = src_page->frame;
+		lock_release (&frame_lock);
+
+        /* pml4에 writable false로 set */
+        pml4_set_page (thread_current ()->pml4, dst_page->va, dst_page->frame->kva, false);
+        pml4_set_page (src_page->p_thread->pml4, src_page->va, src_page->frame->kva, false);
     } 
 	/* 부모가 ram에 없으면 */
     else {
+        if (!vm_do_claim_page (dst_page)) {
+			return false;
+		}
+        
         if (VM_TYPE(src_page->operations->type) == VM_ANON) {
             anon_read_from_swap (src_page->anon.swap_index, dst_page->frame->kva);
         }
-		else if (VM_TYPE(src_page->operations->type) == VM_FILE) {
+        else if (VM_TYPE(src_page->operations->type) == VM_FILE) {
             sys_file_lock_acquire ();
             file_read_at (dst_page->file.file, dst_page->frame->kva, dst_page->file.read_bytes, dst_page->file.offset);
             sys_file_lock_release ();
-
             memset (dst_page->frame->kva + dst_page->file.read_bytes, 0, PGSIZE - dst_page->file.read_bytes);
         }
     }
 
-	return true;
+    return true;
 }
 
 /* 부모의 file_page맴버 복사 */
