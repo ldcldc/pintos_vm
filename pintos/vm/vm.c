@@ -2,6 +2,7 @@
 
 #include <list.h>
 #include <hash.h>
+#include <string.h>
 
 #include "threads/vaddr.h"
 #include "threads/mmu.h"
@@ -63,9 +64,9 @@ static struct frame *vm_get_frame (void);
 static bool vm_handle_wp (struct page *page UNUSED);
 static bool vm_stack_growth (void *addr);
 static bool vm_do_claim_page (struct page *page);
-static unsigned page_hash (const struct hash_elem *e, void *aux UNUSED);
+static uint64_t page_hash (const struct hash_elem *e, void *aux UNUSED);
 static bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);
-static bool page_copy_uninit (struct supplemental_page_table *dst, struct page *src_page);
+static bool page_copy_uninit (struct page *src_page);
 static bool page_copy_initialized (struct supplemental_page_table *dst, struct page *src_page);
 static struct segment_aux * duplicate_segment_aux (struct segment_aux *src_aux);
 static bool duplicate_file_page_meta (struct page *dst_page, struct page *src_page);
@@ -146,7 +147,7 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
     struct page round_down_page;
     round_down_page.va = pg_round_down (va);
 
-	if (&round_down_page == NULL || &((&round_down_page)->hash_elem) == NULL)
+	if (&((&round_down_page)->hash_elem) == NULL)
 		return NULL;
 
     /* hash_find로 탐색 */
@@ -209,7 +210,8 @@ vm_scan_victim (void) {
 
         curr_frame_elem = list_next_circular (curr_frame_elem, &frame_list);
 
-        if (curr_frame->page == NULL) {
+		/* 비어 있거나 eviction 금지 상태면 후보에서 제외 */
+        if (curr_frame->page == NULL || curr_frame->no_evict) {
             continue;
         }
 
@@ -255,7 +257,8 @@ vm_evict_frame (void) {
         return NULL; 
     }
 
-    /* 연결 다 끊고, front_page 스왑 위치 공유 */
+    /* 연결 다 끊고, front_page 스왑 위치 공유 (lock필요) */
+    lock_acquire (&frame_lock);
     while (!list_empty (&victim->page_list)) {
         struct list_elem *e = list_pop_front (&victim->page_list);
         struct page *page = list_entry (e, struct page, cow_elem);
@@ -273,6 +276,7 @@ vm_evict_frame (void) {
     
     list_init (&victim->page_list);
     victim->page = NULL;
+    lock_release (&frame_lock);
 
     return victim;
 }
@@ -311,47 +315,85 @@ vm_get_frame (void) {
 
     list_init (&frame->page_list);
 
+    /* 작업 끝날 때 까지 evict 후보에서 제외 */
+    frame->no_evict = true;
+
     return frame;
 }
+
+/* lock_acquire (&frame_lock)로 더이상 evict못하게 하고
+ * 그 전에 evict 됐으면 그냥 나가서 not present fault로 다시 swap in 시켜야 함
+ * 공유중 아니면 pml4_set_page로 writable = true 
+ * vm_get_frame ()하기 전엔 lock_release (&frame_lock)해야 하니 
+ * share_frame->no_evict = true 로 evict방어
+ * vm_get_frame ()위아래로 release했다가 acquire하는 사이에 지워질 수도 있어
+ * 한번더 검사 후 마저 진행 */
+
 
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page) {
     struct frame *share_frame = page->frame;
-        
-    /* 해당 프래임을 공유하고있으면 */
-    if (list_size (&share_frame->page_list) > 1) {
-		lock_acquire (&frame_lock);
-        list_remove (&page->cow_elem);
-        lock_release (&frame_lock);
-        
-        /* get_frame후 memcpy */
-        struct frame *private_frame = vm_get_frame ();
-        if (private_frame == NULL) {
-			return false;
-		}
-        
-        memcpy (private_frame->kva, share_frame->kva, PGSIZE);
-        
-        page->frame = private_frame;
-        private_frame->page = page;
+    struct frame *private_frame = NULL;
 
-        list_push_back (&private_frame->page_list, &page->cow_elem);
-        
-        /* pml4에 frame이랑 writable 변경 */
-        pml4_set_page (thread_current ()->pml4, page->va, private_frame->kva, true);
-    } 
-    /* 공유 안하고있으면 */
-    else {        
-        /* pml4에 writable 변경 */
-        pml4_set_page (thread_current ()->pml4, page->va, share_frame->kva, true);
+    lock_acquire (&frame_lock);
+
+    /* fault나서 여기왔는데 그 사이 evict됐으면 나가서 not present fault로 다시 swap in */
+    if (page->frame != share_frame) {
+        lock_release (&frame_lock);
+        return true;
     }
-    
+
+    /* 공유 중 아니면 writable = true */
+    if (list_size (&share_frame->page_list) <= 1) {
+        pml4_set_page (thread_current ()->pml4, page->va, share_frame->kva, true);
+        lock_release (&frame_lock);
+        return true;
+    }
+
+    /* vm_get_frame()대비 evict방어 */
+    share_frame->no_evict = true;
+    lock_release (&frame_lock);
+
+    private_frame = vm_get_frame ();
+    if (private_frame == NULL) {
+        lock_acquire (&frame_lock);
+        share_frame->no_evict = false;
+        lock_release (&frame_lock);
+        return false;
+    }
+
+    lock_acquire (&frame_lock);
+ 
+    /* 한번더 검사 후 마저 진행 */
+    if (page->frame != share_frame) {
+        share_frame->no_evict = false;
+        lock_release (&frame_lock);
+        vm_remove_frame_from_table (private_frame);
+        palloc_free_page (private_frame->kva);
+        free (private_frame);
+        return true;
+    }
+
+    memcpy (private_frame->kva, share_frame->kva, PGSIZE);
+    list_remove (&page->cow_elem);
+
+    page->frame = private_frame;
+    private_frame->page = page;
+    list_push_back (&private_frame->page_list, &page->cow_elem);
+
+    share_frame->no_evict = false;
+    lock_release (&frame_lock);
+
+    /* pml4에 frame이랑 writable 변경*/
+    pml4_set_page (thread_current ()->pml4, page->va, private_frame->kva, true);
+    private_frame->no_evict = false;
+
     return true;
 }
 
 bool
-vm_claim_if_valid (struct supplemental_page_table *spt, struct page *page, void *addr, void *rsp, bool write) {
+vm_claim_if_valid (struct page *page, void *addr, void *rsp, bool write) {
 	if (page == NULL) {
 		/* 스택인지, 늘릴 수 있는지 확인 */
 		if (addr >= rsp - 8 && addr < (void *) USER_STACK && addr >= (void *) (USER_STACK - (MAXSTACK))) {
@@ -401,8 +443,9 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	struct thread *curr = thread_current ();
 	struct supplemental_page_table *spt= &curr->spt;
 
-    if (addr == NULL || is_kernel_vaddr (addr))
+    if (addr == NULL || is_kernel_vaddr (addr)) {
         return false;
+	}
 
 	struct page *page = spt_find_page (spt, addr);
 
@@ -416,9 +459,9 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	}
 
 	/* 유저모드인지 커널모드인지에 따라 rsp설정 */
-	void *rsp = user ? f->rsp : curr->ursp;
+	void *rsp = (void *)(user ? f->rsp : curr->ursp);
 
-	return vm_claim_if_valid(spt, page, addr, rsp, write);
+	return vm_claim_if_valid(page, addr, rsp, write);
 }
 
 /* Free the page.
@@ -449,25 +492,33 @@ vm_do_claim_page (struct page *page) {
         return false;
 	}
 
-	/* Set links */
+	/* frame<->page 연결 */
 	frame->page = page;
 	page->frame = frame;
 
-    list_push_back (&frame->page_list, &page->cow_elem);
-
-	/* pml4에 입력 */
-	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
-        return false;
-	}
-
-    /* 실패 시 frame반환 */
+    /* 내용 채우기 */
     if (!swap_in (page, frame->kva)) {
+        frame->page = NULL;
+        page->frame = NULL;
         vm_remove_frame_from_table (frame);
         palloc_free_page (frame->kva);
         free (frame);
-        page->frame = NULL;
         return false;
     }
+
+	/* pml4에 입력 */
+	if (!pml4_set_page (thread_current ()->pml4, page->va, frame->kva, page->writable)) {
+        frame->page = NULL;
+        page->frame = NULL;
+        vm_remove_frame_from_table (frame);
+        palloc_free_page (frame->kva);
+        free (frame);
+        return false;
+	}
+
+    /* 할거 다 끝나면 evict가능 */
+    list_push_back (&frame->page_list, &page->cow_elem);
+    frame->no_evict = false;
 
     return true;
 }
@@ -478,7 +529,7 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init(&spt->hash, page_hash, page_less, NULL);
 }
 
-static unsigned
+static uint64_t
 page_hash (const struct hash_elem *e, void *aux UNUSED) {
     const struct page *p = hash_entry (e, struct page, hash_elem);
     return hash_bytes (&p->va, sizeof p->va);
@@ -512,7 +563,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 
 		/* uninit page */
 		if (VM_TYPE (src_page->operations->type) == VM_UNINIT) {
-            success = page_copy_uninit (dst, src_page);
+            success = page_copy_uninit (src_page);
         }
 		/* initialized page */
         else {
@@ -528,8 +579,7 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 
 /* uninit page를 copy할 때 */
 static bool
-page_copy_uninit (struct supplemental_page_table *dst,
-		struct page *src_page) {
+page_copy_uninit (struct page *src_page) {
 	struct segment_aux *src_aux = (struct segment_aux *) src_page->uninit.aux;
 
 	/* aux 복사 */
@@ -585,8 +635,9 @@ page_copy_initialized (struct supplemental_page_table *dst,
 		return false;
 	}
 
-	/* VM_FILE 일 때 file_page맴버 복사 */
+	/* VM_FILE 이면 file_page로 바꾸고 file_page맴버 복사 */
     if (VM_TYPE(src_page->operations->type) == VM_FILE) {
+        file_backed_initializer (dst_page, VM_FILE, NULL);
         if (!duplicate_file_page_meta (dst_page, src_page)) {
             return false;
         }
@@ -601,6 +652,11 @@ page_copy_initialized (struct supplemental_page_table *dst,
             sys_file_lock_release ();
             
             pml4_set_dirty (src_page->p_thread->pml4, src_page->va, false);
+        }
+
+        /* VM_ANON이면 미리 anon_page로 변경 */
+        if (VM_TYPE(src_page->operations->type) == VM_ANON) {
+            anon_initializer (dst_page, VM_ANON, NULL);
         }
 
 		lock_acquire (&frame_lock);
@@ -618,14 +674,9 @@ page_copy_initialized (struct supplemental_page_table *dst,
 			return false;
 		}
         
+        /* anon이면 부모의 스왑 데이터 복사 */
         if (VM_TYPE(src_page->operations->type) == VM_ANON) {
             anon_read_from_swap (src_page->anon.swap_index, dst_page->frame->kva);
-        }
-        else if (VM_TYPE(src_page->operations->type) == VM_FILE) {
-            sys_file_lock_acquire ();
-            file_read_at (dst_page->file.file, dst_page->frame->kva, dst_page->file.read_bytes, dst_page->file.offset);
-            sys_file_lock_release ();
-            memset (dst_page->frame->kva + dst_page->file.read_bytes, 0, PGSIZE - dst_page->file.read_bytes);
         }
     }
 

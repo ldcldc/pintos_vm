@@ -83,6 +83,7 @@ struct frame {
 	struct page *page;
 	struct list_elem frame_elem;
 	struct list page_list;			/* 이 frame을 공유하는 page list(cow) */
+	bool no_evict;					/* true면 CLOCK의 eviction 후보에서 제외 */
 };
 
 /* The function table for page operations.
@@ -121,8 +122,7 @@ void spt_remove_page (struct supplemental_page_table *spt, struct page *page);
 void vm_init (void);
 bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 		bool write, bool not_present);
-bool vm_claim_if_valid (struct supplemental_page_table *spt, struct page *page, void *addr,
-		void *rsp, bool write);
+bool vm_claim_if_valid (struct page *page, void *addr, void *rsp, bool write);
 
 #define vm_alloc_page(type, upage, writable) \
 	vm_alloc_page_with_initializer ((type), (upage), (writable), NULL, NULL)

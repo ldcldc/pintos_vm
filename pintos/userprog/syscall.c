@@ -125,7 +125,7 @@ check_access (void *addr, bool is_write) {
 
     struct thread *curr = thread_current ();
     struct page *page = spt_find_page (&curr->spt, addr);
-    if (!vm_claim_if_valid (&curr->spt, page, addr, curr->ursp, is_write)) {
+    if (!vm_claim_if_valid (page, addr, curr->ursp, is_write)) {
         sys_exit(-1);
     }
 }
