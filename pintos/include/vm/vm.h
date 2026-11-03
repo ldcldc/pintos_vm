@@ -25,6 +25,13 @@ enum vm_type {
 	VM_MARKER_END = (1 << 31),
 };
 
+typedef enum {
+	FAULT_NONE				= 0,
+	FAULT_ACCESS_VIOLATION 	= 1,
+	FAULT_FAIL_CLAIM 		= 2,
+	FAULT_SUCCESS_CLAIM 	= 3
+}vm_pg_fault_type;
+
 #include "vm/uninit.h"
 #include "vm/anon.h"
 #include "vm/file.h"
@@ -40,6 +47,7 @@ struct segment_aux {
 	off_t offset; 				/* 오프셋 */
 	size_t page_read_bytes; 	/* 파일에서 실제 읽어올 크기 (<= 4096) */
 	size_t page_zero_bytes; 	/* 0초기화할 읽고 남은 크기 */
+	size_t page_cnt;
 };
 
 #define VM_TYPE(type) ((type) & 7)
@@ -57,7 +65,7 @@ struct page {
 	struct hash_elem hash_elem; /* hash_elem */
 
 	bool writable;					/* writable == false => only readable */
-
+	
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
 	union {
@@ -67,7 +75,7 @@ struct page {
 #ifdef EFILESYS
 		struct page_cache page_cache;
 #endif
-	};		
+	};
 };
 
 /* The representation of "frame" */
@@ -120,5 +128,6 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
+bool vm_is_valid_stack_access (uintptr_t rsp, void *addr);
 
 #endif  /* VM_VM_H */

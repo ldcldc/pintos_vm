@@ -128,6 +128,23 @@ check_valid_page (void *addr, bool is_write) {
     }
 }
 
+// static void
+// check_valid_page (void *addr, bool is_write) {    
+//     check_address (addr);
+    
+//     struct page *page = spt_find_page (&thread_current ()->spt, addr);
+//     if (page != NULL) {
+//         if (!vm_try_claim_page (addr, is_write, page)) {
+//             sys_exit (-1);
+//         }
+//         return;
+//     }
+
+//     if (!vm_is_valid_stack_access (thread_current ()->ursp, addr)) {
+//         sys_exit (-1);
+//     }
+// }
+
 static void
 check_valid_filename (char *file) {
     check_address (file);
@@ -152,6 +169,73 @@ void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
     check_valid_page (ptr + size - 1, is_write);
 }
 
+static bool
+is_valid_mmap_addr (const void *addr, size_t length, off_t file_len, off_t offset) {
+    if (addr == NULL || length <= 0 || file_len <= 0) {
+        return false;
+    }
+
+    if (pg_ofs (addr) || pg_ofs (offset) || !is_user_vaddr (addr)) {
+        return false;
+    }
+
+    if (!is_user_vaddr (addr + length) || addr + length < addr) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool
+is_already_mapped (const void *addr, size_t length) {
+    char *start = (char *) addr;
+
+    for (char *curr = start; curr < start + length; curr += PGSIZE) {
+        struct page *page = spt_find_page (&thread_current ()->spt, curr);
+
+        if (page != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* 메모리 매핑 유효성 검증 */
+static bool
+is_valid_mmap (const void *addr, size_t length, bool writable, int fd, off_t offset) {
+    if (fd < 2 || fd >= thread_current ()->fd_capacity) {
+        return false;
+    }
+
+    struct file *curr_file = thread_current ()->file_list[fd];
+    off_t file_len = file_length (curr_file);
+
+    if (!is_valid_mmap_addr (addr, length, file_len, offset)) {
+        return false;
+    }
+
+    if (is_already_mapped (addr, length)) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool
+is_valid_munmap (const void *addr) {
+    if (addr == NULL || !is_user_vaddr(addr)) {
+        return false;
+    }
+
+    struct page *page = spt_find_page (&thread_current ()->spt, addr);
+    if (page == NULL) {
+        return false;
+    }
+    
+    size_t length = page->file.length;
+    return is_already_mapped (addr, length);
+}
 
 /* 현재 스레드에 파일 추가 */
 static int 
@@ -507,6 +591,33 @@ sys_dup2 (int oldfd, int newfd) {
     return newfd;
 }
 
+static void*
+sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+    if (!is_valid_mmap (addr, length, writable, fd, offset)) {
+        return NULL;
+    }
+    struct file *curr_file = thread_current ()->file_list[fd];
+
+    lock_acquire (&file_lock);
+    void *mapped_addr = do_mmap (addr, length, writable, curr_file, offset);
+    lock_release (&file_lock);
+
+    return mapped_addr;
+}
+
+static void
+sys_munmap (void *addr) {
+    if (!is_valid_munmap (addr)) {
+        return;
+    }
+
+    lock_acquire (&file_lock);
+    do_munmap (addr);
+    lock_release (&file_lock);
+
+    return;
+}
+
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f) {
@@ -589,6 +700,17 @@ syscall_handler (struct intr_frame *f) {
             /* f->R.rdi == oldfd, f->R.rsi == newfd */
             f->R.rax = sys_dup2 ((int) f->R.rdi, (int) f->R.rsi);
             break;
+
+        case SYS_MMAP:
+            /* f->R.rdi == addr, f->R.rsi == length, f->R.rdx == writable, f->R.r10 == fd, f->R.r8 == offset */
+            f->R.rax = sys_mmap (f->R.rdi, f->R.rsi, f->R.rdx, f->R.r10, f->R.r8);
+            break;
+
+        case SYS_MUNMAP:
+            /* f->R.rdi == addr */
+            sys_munmap (f->R.rdi);
+            break;
+
         default:
             sys_exit(-1);
             break;

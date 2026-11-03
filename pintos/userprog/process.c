@@ -32,6 +32,8 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+static struct segment_aux *set_aux (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes);
+static void set_page_cnt (struct segment_aux *aux, size_t page_cnt, uint32_t read_bytes);
 
 /* 자식에게 넘겨줄 data 구조체 */
 struct parent_data {
@@ -823,7 +825,9 @@ lazy_load_segment (struct page *page, void *aux) {
 	struct segment_aux *s_aux = (struct segment_aux *) aux;
     /* file offset에서 page_read_bytes만큼 kva로 read */
     if (file_read_at (s_aux->file, page->frame->kva, s_aux->page_read_bytes, s_aux->offset) != (int) s_aux->page_read_bytes) {
-		file_close (s_aux->file); 
+		if (page->operations->type != VM_FILE) {
+			file_close (s_aux->file); 
+		}
         free (s_aux);
         return false;
     }
@@ -831,7 +835,9 @@ lazy_load_segment (struct page *page, void *aux) {
 	/* page_zero_bytes 초기화 */
 	memset (page->frame->kva + s_aux->page_read_bytes, 0, s_aux->page_zero_bytes);
 
-	file_close (s_aux->file);
+	if (page->operations->type != VM_FILE) {
+		file_close (s_aux->file);
+	}
     free (s_aux);
     return true;
 }
@@ -859,7 +865,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 	struct segment_aux *aux;
 
-	while(read_bytes > 0 || zero_bytes > 0) {
+	while (read_bytes > 0 || zero_bytes > 0) {
 		/* Do calculate how to fill this page.
 		 * We will read PAGE_READ_BYTES bytes from FILE
 		 * and zero the final PAGE_ZERO_BYTES bytes. */
@@ -870,7 +876,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		if (aux == NULL)
             return false;
 
-        aux->file = file_duplicate(file);
+        aux->file = file_duplicate (file);
         aux->offset = ofs;
         aux->page_read_bytes = page_read_bytes;
         aux->page_zero_bytes = page_zero_bytes;
@@ -894,8 +900,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (struct intr_frame *if_) {
 	void *stack_bottom = (void *) (((uint8_t *) USER_STACK) - PGSIZE);
-
-		/* TODO: Map the stack on stack_bottom and claim the page immediately.
+	/* TODO: Map the stack on stack_bottom and claim the page immediately.
 	 * TODO: If success, set the rsp accordingly.
 	 * TODO: You should mark the page is stack. */
 	/* TODO: Your code goes here */
@@ -910,4 +915,64 @@ setup_stack (struct intr_frame *if_) {
 
 	return false;
 }
+
+bool
+load_segment_file (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes, 
+					uint32_t zero_bytes, bool writable, enum vm_type type) {
+	ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+	ASSERT (pg_ofs (upage) == 0);
+	ASSERT (ofs % PGSIZE == 0);
+
+	// struct segment_aux *aux;
+	size_t page_cnt = 0;
+
+	while (read_bytes > 0 || zero_bytes > 0) {
+		size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+		size_t page_zero_bytes = PGSIZE - page_read_bytes;
+
+		struct segment_aux *aux = set_aux (file, ofs, page_read_bytes, page_zero_bytes);
+		if (aux == NULL) {
+	    	return false;
+		}
+
+		if (!vm_alloc_page_with_initializer (type, upage, writable, lazy_load_segment, aux)) {
+			free (aux);
+			return false;
+		}
+		
+		set_page_cnt (aux, page_cnt, read_bytes);
+		
+		read_bytes -= page_read_bytes;
+		zero_bytes -= page_zero_bytes;
+		upage += PGSIZE;
+		ofs += page_read_bytes;
+	}
+	return true;
+}
+
+static struct segment_aux *
+set_aux (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes) {
+	struct segment_aux *aux = malloc (sizeof(*aux));
+	if (aux == NULL)
+		return NULL;
+
+	aux->file = file_duplicate(file);
+	aux->offset = ofs;
+	aux->page_read_bytes = page_read_bytes;
+	aux->page_zero_bytes = page_zero_bytes;
+
+	return aux;
+}
+
+static void
+set_page_cnt (struct segment_aux *aux, size_t page_cnt, uint32_t read_bytes) {
+	if (page_cnt == 0) {
+		aux->page_cnt = read_bytes > PGSIZE ? (read_bytes/PGSIZE) : 1;
+		page_cnt = aux->page_cnt;
+	}
+	else {
+		aux->page_cnt = page_cnt;
+	}
+}
+
 #endif /* VM */

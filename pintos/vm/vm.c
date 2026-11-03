@@ -7,6 +7,7 @@
 #include "vm/inspect.h"
 #include <hash.h>
 #include "threads/vaddr.h"
+#include <string.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -40,9 +41,12 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
-static unsigned page_hash (const struct hash_elem *e, void *aux UNUSED);
+static uint64_t page_hash (const struct hash_elem *e, void *aux UNUSED);
 static bool page_less (const struct hash_elem *a, const struct hash_elem *b, void *aux UNUSED);
 static void destructor (struct hash_elem *e, void *aux UNUSED);
+static bool vm_is_valid_user_access (void *addr, bool user, bool not_present);
+bool vm_try_claim_page (void *addr, bool write, struct page *page);
+static vm_pg_fault_type vm_get_fault_type (void *addr, bool write, struct page *page);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -94,7 +98,7 @@ err:
 	return false;
 }
 
-static unsigned
+static uint64_t
 page_hash (const struct hash_elem *e, void *aux UNUSED) {
     const struct page *p = hash_entry (e, struct page, hash_elem);
     return hash_bytes (&p->va, sizeof p->va);
@@ -129,7 +133,7 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
 	}
     /* hash_find로 탐색 */
     struct hash_elem *h_e = hash_find (&spt->hash, &round_down_page.hash_elem);
-    if (h_e == NULL){
+    if (h_e == NULL) {
         return NULL;
 	}
 
@@ -191,16 +195,18 @@ vm_get_frame (void) {
 }
 
 /* Growing the stack. */
-static void
+static bool
 vm_stack_growth (void *addr) {
 	void *aligned_addr = pg_round_down (addr);
 	if (!vm_alloc_page (VM_ANON | VM_MARKER_0, aligned_addr, true)) {
-		return;
+		return false;
 	}
 
 	if (!vm_claim_page (aligned_addr)) {
-		return;
+		return false;
 	}
+
+	return true;
 }
 
 /* Handle the fault on write_protected page */
@@ -212,35 +218,73 @@ vm_handle_wp (struct page *page UNUSED) {
 bool
 vm_try_handle_fault (struct intr_frame *f, void *addr, 
 			bool user, bool write, bool not_present) {
-		
-	/* NULL 포인터인 경우, 유저 공간이 아닌경우, 접근 권한이 없는 경우 */
-	if (addr == NULL || !is_user_vaddr(addr) || !not_present) {
+			
+	if (!vm_is_valid_user_access (addr, user, not_present)) {
 		return false;
 	}
 
-	/* SPT에 존재할 경우 처리 */
 	struct page *page = spt_find_page (&(thread_current ()->spt), addr);
 	if (page != NULL) {
-		/* read only page에 쓰기 접근 거부 */		
-		if (write && !page->writable) {
-			return false;
-		}
-		return vm_do_claim_page (page);
-	}
-	
-	/* 스택 영역 위 매핑되지 않은 공간인 경우 */
-	if ((uintptr_t)addr > (uintptr_t)USER_STACK) {
-		return false;
+		return vm_try_claim_page (addr, write, page);
 	}
 
-	/* 모드 판단. fault 발생 전이 유저 모드일 경우 f->rsp로 접근. 
-	   아닐 경우 syscall에서 스레드에 저장해둔 프레임에서 rsp 꺼내기 */
 	if (user) {
 		thread_current ()->ursp = f->rsp;
 	}
 
-	/* 해당 주소 접근이 유효한 스택 접근으로 볼 수 없는 경우 */
-	if ((uintptr_t)addr < (uintptr_t)(thread_current ()->ursp - 8)) {
+	return vm_is_valid_stack_access (thread_current ()->ursp, addr);	
+}
+
+/*--------------------------vm_try_handle_fault helper--------------------------*/
+bool
+vm_is_valid_user_access (void *addr, bool user, bool not_present) {
+	if (addr == NULL || !is_user_vaddr(addr) || !not_present) {
+		return false;
+	}
+	return true;
+}
+
+bool
+vm_try_claim_page (void *addr, bool write, struct page *page) {
+	vm_pg_fault_type fault_type = vm_get_fault_type (addr, write, page);
+
+	switch (fault_type) {
+		case FAULT_ACCESS_VIOLATION:
+			return false;
+
+		case FAULT_FAIL_CLAIM:
+			return false;
+
+		case FAULT_SUCCESS_CLAIM:
+			return true;
+
+		default:
+			return false;
+	}
+}
+
+static vm_pg_fault_type
+vm_get_fault_type (void *addr, bool write, struct page *page) {	
+	
+	if (write && !page->writable) {
+		return FAULT_ACCESS_VIOLATION;
+	}
+
+	if (!vm_do_claim_page (page)) {
+		return FAULT_FAIL_CLAIM;		
+	}
+
+	return FAULT_SUCCESS_CLAIM;
+}
+
+bool
+vm_is_valid_stack_access (uintptr_t rsp, void *addr) {
+
+	if ((uintptr_t)addr > (uintptr_t)USER_STACK) {
+		return false;
+	}
+
+	if ((uintptr_t)addr < (uintptr_t)(rsp - 8)) {
 		return false;
 	}
 
@@ -248,9 +292,9 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 		return false;
 	}
 
-	vm_stack_growth (addr);
-	return true;
+	return vm_stack_growth (addr);
 }
+/*--------------------------vm_try_handle_fault helper--------------------------*/
 
 /* Free the page.
  * DO NOT MODIFY THIS FUNCTION. */
@@ -370,15 +414,15 @@ supplemental_page_table_copy (struct supplemental_page_table *dst,
 		bool success = (src_page->frame == NULL) ? page_copy_uninit (dst, src_page)
 												 : page_copy_initialized (dst, src_page);
 
-		if (!success){
+		if (!success) {
 			return false;
 		}
     }
     return true;
 }
+
 static void destructor (struct hash_elem *e, void *aux UNUSED) {
-    struct page *page = hash_entry (e, struct page, hash_elem);
-	/* free (aux) 생각해보기 */
+    struct page *page = hash_entry (e, struct page, hash_elem);	
     vm_dealloc_page (page);
 }
 
