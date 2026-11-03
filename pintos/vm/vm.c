@@ -205,9 +205,9 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 
 /* Copy supplemental page table from src to dst */
 /*
-	src의 supplemental page table 안에 있는 각 page를 순회하면서 
-	dst의 supplemental page table에 정확한 복사본 entry를 만들어야 합니다. 
-	uninit page를 할당하고 곧바로 claim해야 합니다.	
+	src의 supplemental page table 안에 있는 각 page를 순회하면서
+	dst의 supplemental page table에 정확한 복사본 entry를 만들어야 합니다.
+	uninit page를 할당하고 곧바로 claim해야 합니다.
 */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,

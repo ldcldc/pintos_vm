@@ -484,7 +484,7 @@ sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
     }
 
     /* 유저 공간인지 확인 */
-    if (!is_user_vaddr (addr) || !is_user_vaddr (addr + length)) {
+    if (!is_user_vaddr (addr) || !is_user_vaddr (addr + length) || (addr + length) < addr) {
         return NULL;
     }
 
