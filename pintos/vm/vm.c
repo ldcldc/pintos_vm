@@ -8,6 +8,7 @@
 #include <hash.h>
 #include "threads/vaddr.h"
 #include <string.h>
+#include "userprog/process.h"
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -47,6 +48,7 @@ static void destructor (struct hash_elem *e, void *aux UNUSED);
 static bool vm_is_valid_user_access (void *addr, bool user, bool not_present);
 bool vm_try_claim_page (void *addr, bool write, struct page *page);
 static vm_pg_fault_type vm_get_fault_type (void *addr, bool write, struct page *page);
+static bool is_success_alloc (struct page* src_page);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -55,7 +57,7 @@ bool
 vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		vm_initializer *init, void *aux) {
 
-	if (upage == NULL || !is_user_vaddr(upage)|| pg_ofs (upage) != 0)	//pg_ofs (upage)이것도 지금해야할까 코드 아래랑 커널베이스~스택 사이는?
+	if (upage == NULL || !is_user_vaddr(upage)|| pg_ofs (upage) != 0)
 		goto err;
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
@@ -378,20 +380,49 @@ page_copy_uninit (struct supplemental_page_table *dst,
 bool
 page_copy_initialized (struct supplemental_page_table *dst,
 		struct page *src_page) {
-	/* lazy load필요없으니 vm_alloc_page */
-	if (!vm_alloc_page (src_page->operations->type, src_page->va, src_page->writable))
+	if (!is_success_alloc (src_page))
 		return false;
 
-	/* 즉시 할당 */
-	if (!vm_claim_page (src_page->va))
-		return false;
-
-	/* page도 복사 */
 	struct page *dst_page = spt_find_page (dst, src_page->va);
-	if (dst_page == NULL)
+	if (dst_page == NULL) 
         return false;
 
 	memcpy (dst_page->frame->kva, src_page->frame->kva, PGSIZE);
+	return true;
+}
+
+static bool
+is_success_alloc (struct page* src_page) {
+	struct segment_aux *aux;
+	enum vm_type src_type = src_page->operations->type;
+
+	if (src_type == VM_FILE) {
+		struct file_page *src_file_page = &src_page->file;
+		
+		aux = set_aux (src_file_page->file, src_file_page->offset,
+					   src_file_page->length, PGSIZE - src_file_page->length);
+
+		if (aux == NULL) 
+    		return false;
+
+		aux->page_cnt = src_file_page->page_cnt;
+
+		if (!vm_alloc_page_with_initializer (VM_FILE, src_page->va, src_page->writable, NULL, aux)) {
+			free (aux);
+			return false;
+		}
+	}
+	else {
+		if (!vm_alloc_page (src_type, src_page->va, src_page->writable))
+			return false;
+	}
+
+	if (!vm_claim_page (src_page->va)) 
+		return false;
+
+	if (src_type == VM_FILE) 
+		free (aux);
+
 	return true;
 }
 

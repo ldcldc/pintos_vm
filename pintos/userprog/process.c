@@ -32,7 +32,6 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
-static struct segment_aux *set_aux (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes);
 static void set_page_cnt (struct segment_aux *aux, size_t page_cnt, uint32_t read_bytes);
 
 /* 자식에게 넘겨줄 data 구조체 */
@@ -950,7 +949,7 @@ load_segment_file (struct file *file, off_t ofs, uint8_t *upage, uint32_t read_b
 	return true;
 }
 
-static struct segment_aux *
+struct segment_aux *
 set_aux (struct file *file, off_t ofs, size_t page_read_bytes, size_t page_zero_bytes) {
 	struct segment_aux *aux = malloc (sizeof(*aux));
 	if (aux == NULL)

@@ -73,8 +73,8 @@ do_mmap (void *addr, size_t length, int writable,
 	uint32_t standard_length = file_len - offset;
 
 	uint32_t read_bytes = standard_length >= (offset + length) ? length : (file_len - offset);
-	uint32_t zero_bytes = read_bytes <= PGSIZE ? 
-			 (PGSIZE - read_bytes) : pg_round_up (addr + read_bytes) - (addr + read_bytes);
+	uint32_t zero_bytes = read_bytes <= PGSIZE ? (PGSIZE - read_bytes) 
+											   : pg_round_up (addr + read_bytes) - (addr + read_bytes);
 	
 	if (!load_segment_file (file, offset, addr, read_bytes, zero_bytes, writable, VM_FILE)) {
 		return NULL;
@@ -100,6 +100,6 @@ check_page_record (void *addr) {
         struct page *page = spt_find_page (&thread_current ()->spt, curr);
 		
 		hash_delete (&thread_current ()->spt.hash, &page->hash_elem);
-		vm_dealloc_page (page);		
+		vm_dealloc_page (page);
     }
 }
