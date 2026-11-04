@@ -354,8 +354,8 @@ vm_scan_victim (void) {
         if (!vm_frame_is_accessed (curr_frame)) {
             return curr_frame;
         }
+		pml4_set_accessed (curr_frame->page->p_thread->pml4, curr_frame->page->va, false);
     }
-
     return NULL;
 }
 
