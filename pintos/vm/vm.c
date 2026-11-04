@@ -61,7 +61,10 @@ static struct frame * vm_scan_victim (void);
 static bool vm_frame_is_accessed (struct frame *frame);
 static struct frame *vm_evict_frame (void);
 static struct frame *vm_get_frame (void);
-static bool vm_handle_wp (struct page *page UNUSED);
+static bool vm_handle_wp (struct page *page);
+static bool wp_check_exclusive (struct page *page, struct frame *share_frame); 
+static bool wp_split_frame (struct page *page, struct frame *share_frame);
+static void wp_release_frame (struct frame *frame);
 static bool vm_stack_growth (void *addr);
 static bool vm_do_claim_page (struct page *page);
 static uint64_t page_hash (const struct hash_elem *e, void *aux UNUSED);
@@ -457,27 +460,29 @@ vm_get_frame (void) {
     return frame;
 }
 
-/* lock_acquire (&frame_lock)로 더이상 evict못하게 하고
- * 그 전에 evict 됐으면 그냥 나가서 not present fault로 다시 swap in 시켜야 함
- * 공유중 아니면 pml4_set_page로 writable = true 
- * vm_get_frame ()하기 전엔 lock_release (&frame_lock)해야 하니 
- * share_frame->no_evict = true 로 evict방어
- * vm_get_frame ()위아래로 release했다가 acquire하는 사이에 지워질 수도 있어
- * 한번더 검사 후 마저 진행 */
-
-
 /* Handle the fault on write_protected page */
 static bool
 vm_handle_wp (struct page *page) {
     struct frame *share_frame = page->frame;
-    struct frame *private_frame = NULL;
 
+    if (wp_check_exclusive (page, share_frame)) {
+        return true;
+    }
+
+    /* 공유 중일때(cow) */
+    return wp_split_frame (page, share_frame);
+}
+
+/* 정상 fault가 필요하건 따로 처리가 필요없건 return true
+ * 공유 중이라 분리 필요시 return false */
+static bool
+wp_check_exclusive (struct page *page, struct frame *share_frame) {
     lock_acquire (&frame_lock);
 
-    /* fault나서 여기왔는데 그 사이 evict됐으면 나가서 not present fault로 다시 swap in */
+    /* 그 사이 evict됐으면 나가서 not present로 정상fault */
     if (page->frame != share_frame) {
         lock_release (&frame_lock);
-        return true;
+        return true; 
     }
 
     /* 공유 중 아니면 writable = true */
@@ -487,27 +492,33 @@ vm_handle_wp (struct page *page) {
         return true;
     }
 
-    /* vm_get_frame()대비 evict방어 */
+    /* 공유 중이라 분리 필요시 return false */
     share_frame->no_evict = true;
     lock_release (&frame_lock);
+    
+    return false;
+}
 
-    private_frame = vm_get_frame ();
+/* 공유 프레임을 새 프레임으로 복사하고, 해당 page와 연결 */
+static bool
+wp_split_frame (struct page *page, struct frame *share_frame) {
+    /* vm_get_frame()에는 lock 들고가기X */
+    struct frame *private_frame = vm_get_frame ();
+
     if (private_frame == NULL) {
-        lock_acquire (&frame_lock);
-        share_frame->no_evict = false;
-        lock_release (&frame_lock);
-        return false;
+		lock_acquire (&frame_lock);
+		share_frame->no_evict = false;
+		lock_release (&frame_lock);
+		return false;
     }
 
     lock_acquire (&frame_lock);
- 
-    /* 한번더 검사 후 마저 진행 */
+
+    /* no_evict바꾸기 전에 evict 진행 중이었으면 프레임 반환 후 다시 fault */
     if (page->frame != share_frame) {
         share_frame->no_evict = false;
         lock_release (&frame_lock);
-        vm_remove_frame_from_table (private_frame);
-        palloc_free_page (private_frame->kva);
-        free (private_frame);
+        wp_release_frame (private_frame);
         return true;
     }
 
@@ -519,6 +530,7 @@ vm_handle_wp (struct page *page) {
     list_push_back (&private_frame->page_list, &page->cow_elem);
 
     share_frame->no_evict = false;
+
     lock_release (&frame_lock);
 
     /* pml4에 frame이랑 writable 변경*/
@@ -526,6 +538,14 @@ vm_handle_wp (struct page *page) {
     private_frame->no_evict = false;
 
     return true;
+}
+
+/* 프레임 반납 */
+static void
+wp_release_frame (struct frame *frame) {
+    vm_remove_frame_from_table (frame);
+    palloc_free_page (frame->kva);
+    free (frame);
 }
 
 static bool
