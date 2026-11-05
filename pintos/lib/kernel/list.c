@@ -318,6 +318,15 @@ list_reverse (struct list *list) {
 	}
 }
 
+struct list_elem *
+list_next_circular (struct list_elem *curr, struct list *list) {
+    struct list_elem *next = list_next (curr);
+    if (next == list_end (list)) {
+        return list_begin (list);
+    }
+    return next;
+}
+
 /* Returns true only if the list elements A through B (exclusive)
    are in order according to LESS given auxiliary data AUX. */
 static bool

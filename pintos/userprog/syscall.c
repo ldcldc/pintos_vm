@@ -18,12 +18,14 @@
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+#include "vm/file.h"
+#include "vm/vm.h"
 
 struct lock file_lock;
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 void sys_exit (int status);
-void check_valid_buffer (const void *buffer, size_t size, bool is_write);
+static void check_valid_buffer (const void *buffer, size_t size, bool is_write);
 
 #define STDIN_FILE ((struct file *) 1)
 #define STDOUT_FILE ((struct file *) 2)
@@ -95,7 +97,6 @@ sys_copy_file_list (struct thread *child, struct thread *parent) {
             child->file_list[i] = NULL;
         }
     }
-
     return true;
 }
 
@@ -109,45 +110,65 @@ sys_file_lock_release (void) {
     lock_release (&file_lock);
 }
 
-/* 주소 == NULL or 유저영역 X or 페이지 테이블(pml4)연결 확인  */
-static void 
+/* 주소 == NULL or 유저영역 X 확인  */
+static void
 check_address (void *addr) {
-    if (addr == NULL || !is_user_vaddr (addr) || pml4_get_page (thread_current ()->pml4, addr) == NULL) {
+    if (addr == NULL || !is_user_vaddr (addr)) {
         sys_exit (-1); 
     }
 }
 
+/* 접근 유효성 check 함수 */
+static void
+check_access (void *addr, bool is_write) {
+    check_address (addr);
+
+    struct thread *curr = thread_current ();
+    struct page *page = spt_find_page (&curr->spt, addr);
+    if (!vm_claim_if_valid (page, addr, curr->ursp, is_write)) {
+        sys_exit(-1);
+    }
+}
+
 /* 버퍼가 속한 모든 페이지를 한 번씩 읽어서 물리 메모리에 올림(페이지 폴트 유도) */
-void check_valid_buffer (const void *buffer, size_t size, bool is_write) {
+static void
+check_valid_buffer (const void *buffer, size_t size, bool is_write) {
     if (size == 0) return;
 
     char *ptr = (char *) buffer;
 
     /* 시작 주소부터 PGSIZE 간격으로 체크 */
     for (size_t i = 0; i < size; i += PGSIZE) {
-        check_address (ptr + i);
-        /* 해당 주소를 한 번 읽어서 (1바이트) 페이지 폴트 유도 
-         * volatile로 선언시 아무 동작도 안하는 변수도 최적화 x */
-        volatile char *p = (volatile char *) (ptr + i);
-        char dummy = *p;
-        /* write면 권한 체크 (SPT 페이지로 바꿔야함)*/
-        if (is_write) {
-            *p = dummy;
-        }
+        check_access (ptr + i, is_write);
     }
     /* 버퍼 마지막 1바이트 체크 (여러 페이지에 걸쳐있을 시 대비) */
-    check_address (ptr + size - 1);
+    check_access (ptr + size - 1, is_write);
+}
+
+/* 문자열을 검사, fault유도 */
+static void
+check_valid_str (const void *str) {
+    if (str == NULL) sys_exit(-1);
     
-    volatile char *last_p = (volatile char *) (ptr + size - 1);
-    char dummy = *last_p;
-    if (is_write) {
-        *last_p = dummy;
+    char *ptr = (char *) str;
+
+    /* 반복문 돌면서 검사 */
+    while (true) {
+        /* 첫 글자 or 페이지 넘어갈 때 check_byte_access */
+        if (ptr == (char *)str || ((uint64_t)ptr % PGSIZE) == 0) {
+            check_access (ptr, false); /* 문자열 읽기이므로 is_write는 false */
+        }
+
+        /* \0 나오면 break */
+        if (*ptr == '\0') {
+            break;
+        }
+        ptr++;
     }
 }
 
-
 /* 현재 스레드에 파일 추가 */
-static int 
+static int
 process_add_file (struct file *f) {
     struct thread *curr = thread_current ();
 
@@ -217,14 +238,14 @@ sys_exit (int status) {
 /* process_fork후 자식 tid 리턴 */
 static tid_t
 sys_fork (const char *thread_name, struct intr_frame *f) {
-    check_address ((void *) thread_name);
+    check_valid_str ((void *) thread_name);
     return process_fork (thread_name, f);
 }
 
 /* exec후 return 안함 실패시 return -1 */
 static int
 sys_exec (const char *file) {
-    check_address ((void *) file);
+    check_valid_str ((void *) file);
     /* 인자로 받은 파일명+인자(최대128byte)을 사용하기 전에 
      * process_exec에서 process_cleanup하는데 128바이트여도
      * 커널에 계속 쌓인다고 생각하면 배열로 저장하기에는 위험하니 malloc */
@@ -250,7 +271,7 @@ sys_wait (int pid) {
 /* file create(lock) */
 static bool
 sys_create (const char *file, unsigned initial_size) {
-	check_address ((void *) file);
+	check_valid_str ((void *) file);
     lock_acquire (&file_lock); 
     bool success = filesys_create (file, initial_size);
     lock_release (&file_lock);
@@ -262,7 +283,7 @@ sys_create (const char *file, unsigned initial_size) {
 /* file remove */
 static bool
 sys_remove (const char *file) {
-	check_address ((void *) file);
+	check_valid_str ((void *) file);
     lock_acquire (&file_lock); 
     bool success = filesys_remove (file);
     lock_release (&file_lock);
@@ -273,7 +294,7 @@ sys_remove (const char *file) {
 /* file open */
 static int
 sys_open (const char *file){
-	check_address ((void *) file);
+	check_valid_str ((void *) file);
     lock_acquire(&file_lock); 
     struct file *curr_file = filesys_open (file);
     lock_release(&file_lock);
@@ -316,7 +337,7 @@ sys_filesize (int fd) {
 /* file 데이터 read */
 static int
 sys_read (int fd, void *buffer, unsigned size) {
-    check_valid_buffer (buffer, size, false); 
+    check_valid_buffer (buffer, size, true); 
     struct thread *curr = thread_current ();
 
     init_file_list (curr);
@@ -360,9 +381,9 @@ sys_read (int fd, void *buffer, unsigned size) {
 /* file에 데이터 write */
 static int
 sys_write (int fd, const void *buffer, unsigned size) {
-    check_valid_buffer (buffer, size, true); 
+    check_valid_buffer (buffer, size, false); 
     struct thread *curr = thread_current ();
-    
+
     init_file_list (curr);
 
     /* fd 유효성 check */
@@ -452,6 +473,58 @@ sys_close (int fd) {
     curr->file_list[fd] = NULL;
 }
 
+void *
+sys_mmap (void *addr, size_t length, int writable, int fd, off_t offset) {
+    struct thread *curr = thread_current ();
+
+    /* offset과 addr 정렬 확인, fd, length확인 */
+    if (addr == NULL || length == 0 || fd <= 1 || fd >= curr->fd_capacity ||
+         pg_ofs(offset) != 0 || pg_ofs(addr) != 0) {
+        return NULL;
+    }
+
+    /* 유저 공간인지 확인 */
+    if (!is_user_vaddr (addr) || !is_user_vaddr (addr + length) || (addr + length) < addr) {
+        return NULL;
+    }
+
+    struct file *file = curr->file_list[fd];
+    if (file == NULL) {
+        return NULL;
+    }
+
+    /* file길이 확인 */
+    if (0 < file_length(file) && file_length(file) < offset) {
+        return NULL;
+    }
+
+    /* 이미 spt에 있는 페이지인지 확인 */
+    for (void *i = addr; i < addr + length; i += PGSIZE) {
+        if (spt_find_page (&curr->spt, i) != NULL) {
+            return NULL;
+        }
+    }
+
+    return do_mmap(addr, length, writable, curr->file_list[fd], offset);
+}
+
+void
+sys_munmap (void *addr) {
+    /* addr 정렬, 유저 영역인지 검사 */
+    if (pg_ofs(addr) != 0 || !is_user_vaddr(addr)) {
+        return;
+    }
+
+    struct thread *curr = thread_current ();
+    struct page *page = spt_find_page (&curr->spt, addr);
+
+    /* spt에 없거나 VM_FILE아니면 return */
+    if (page == NULL || VM_TYPE(page->operations->type) != VM_FILE) {
+        return;
+    } 
+    do_munmap(addr);
+}
+
 /* oldfd의 파일을 newfd에 연결 */
 static int
 sys_dup2 (int oldfd, int newfd) {
@@ -503,6 +576,8 @@ sys_dup2 (int oldfd, int newfd) {
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f) {
+    thread_current ()->ursp = f->rsp;
+
     /* 시스템 콜 번호: rax
 	 * 인자 순서 rdi, rsi, rdx, r10, r8, r9 
      */
@@ -577,10 +652,22 @@ syscall_handler (struct intr_frame *f) {
 			sys_close ((int) f->R.rdi);
 			break;
 
+        case SYS_MMAP:
+            /* f->R.rdi == addr, f->R.rsi == length, f->R.rdx == writable,
+             * f->R.r10 == fd, f->R.r8 == offset */
+            f->R.rax = sys_mmap ((void *) f->R.rdi, (size_t)f->R.rsi, (int)f->R.rdx, (int)f->R.r10, (off_t)f->R.r8);
+            break;
+
+        case SYS_MUNMAP:
+            /* f->R.rdi == addr */
+            sys_munmap (f->R.rdi);
+            break;
+
         case SYS_DUP2:
             /* f->R.rdi == oldfd, f->R.rsi == newfd */
             f->R.rax = sys_dup2 ((int) f->R.rdi, (int) f->R.rsi);
             break;
+
         default:
             sys_exit(-1);
             break;

@@ -7,6 +7,10 @@ struct page;
 enum vm_type;
 
 struct file_page {
+    struct file *file;      /* 파일 */
+    off_t offset;           /* 파일에서의 offset */
+    uint32_t read_bytes;    /* 읽어온 크기 == write back할 때 쓸 크기 */
+	size_t num_page;		/* 이 파일에서 읽어온 페이지 수(첫 페이지만 값 넣고 나머진 0) */
 };
 
 void vm_file_init (void);

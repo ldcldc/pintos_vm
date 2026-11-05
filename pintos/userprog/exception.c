@@ -148,6 +148,11 @@ page_fault (struct intr_frame *f) {
     if (user) {
         sys_exit (-1);
     }
+    
+    /* 커널 모드에서 유저의 잘못된 주소로 인한 page_fault */
+    if (!user && is_user_vaddr (fault_addr)) {
+        sys_exit (-1);
+    }
 
 	/* Count page faults. */
 	page_fault_cnt++;
@@ -160,4 +165,3 @@ page_fault (struct intr_frame *f) {
 			user ? "user" : "kernel");
 	kill (f);
 }
-

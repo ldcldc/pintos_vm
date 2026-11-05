@@ -62,7 +62,19 @@ uninit_initialize (struct page *page, void *kva) {
  * PAGE will be freed by the caller. */
 static void
 uninit_destroy (struct page *page) {
-	struct uninit_page *uninit UNUSED = &page->uninit;
+    struct uninit_page *uninit = &page->uninit;
+    struct segment_aux *aux = (struct segment_aux *) uninit->aux;
+
+	/* aux랑 파일이 있으면 file_close */
+	if (aux != NULL) {
+		if (aux->file != NULL) {
+			sys_file_lock_acquire ();
+			file_close (aux->file);
+			sys_file_lock_release ();
+		}
+		free (aux);
+	}
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
+	return;
 }

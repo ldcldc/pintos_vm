@@ -1,6 +1,9 @@
 /* file.c: Implementation of memory backed file object (mmaped object). */
 
 #include "vm/vm.h"
+#include "userprog/process.h"
+#include "threads/vaddr.h"
+#include "threads/mmu.h"
 
 static bool file_backed_swap_in (struct page *page, void *kva);
 static bool file_backed_swap_out (struct page *page);
@@ -26,33 +29,161 @@ file_backed_initializer (struct page *page, enum vm_type type, void *kva) {
 	page->operations = &file_ops;
 
 	struct file_page *file_page = &page->file;
+
+    struct segment_aux *aux = (struct segment_aux *) page->uninit.aux;
+
+    if (aux != NULL) {
+        file_page->file = aux->file;
+        file_page->offset = aux->offset;
+        file_page->read_bytes = aux->page_read_bytes;
+        file_page->num_page = aux->num_page;
+    }
+    else {
+        file_page->file = NULL;
+        file_page->offset = 0;
+        file_page->read_bytes = 0;
+        file_page->num_page = 0;
+    }
+	
+	return true;
 }
 
 /* Swap in the page by read contents from the file. */
 static bool
 file_backed_swap_in (struct page *page, void *kva) {
-	struct file_page *file_page UNUSED = &page->file;
+	struct file_page *file_page = &page->file;
+
+    /* file_read */
+    sys_file_lock_acquire ();
+    int bytes_read = file_read_at (file_page->file, kva, file_page->read_bytes, file_page->offset);
+    sys_file_lock_release ();
+
+    if (bytes_read != (int) file_page->read_bytes) {
+        return false;
+    }
+
+    /* zero_bytes */
+    memset (kva + file_page->read_bytes, 0, PGSIZE - file_page->read_bytes);
+
+    return true;
 }
 
 /* Swap out the page by writeback contents to the file. */
 static bool
 file_backed_swap_out (struct page *page) {
-	struct file_page *file_page UNUSED = &page->file;
+	struct file_page *file_page = &page->file;
+
+    struct thread *page_owner = page->p_thread; 
+    /* Dirty Bit 확인 */
+    if (pml4_is_dirty (page_owner->pml4, page->va)) {
+        
+        /* Write-back */
+        sys_file_lock_acquire ();
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
+        sys_file_lock_release ();
+
+        /* Dirty bit = 0 */
+        pml4_set_dirty (page_owner->pml4, page->va, false);
+    }
+    
+    return true;
 }
 
 /* Destory the file backed page. PAGE will be freed by the caller. */
 static void
 file_backed_destroy (struct page *page) {
 	struct file_page *file_page UNUSED = &page->file;
+    struct thread *curr = thread_current ();
+
+    bool is_shared = false;
+    bool should_free = false;
+
+    /* 공유 상태 확인 */
+    if (page->frame != NULL) {
+        lock_acquire (&frame_lock);
+        is_shared = (list_size (&page->frame->page_list) > 1);
+        list_remove (&page->cow_elem);
+        should_free = list_empty (&page->frame->page_list);
+        lock_release (&frame_lock);
+    }
+
+    /* write back 여부 결정 */
+    if (!is_shared && pml4_is_dirty (curr->pml4, page->va)) {
+        sys_file_lock_acquire ();
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
+        sys_file_lock_release ();
+
+        pml4_set_dirty (curr->pml4, page->va, false);
+    }
+
+    /* dirty bit 확인 */
+    if (pml4_is_dirty (curr->pml4, page->va)) {
+        /* 파일에 변경 내용 write-back */
+		sys_file_lock_acquire ();
+        file_write_at (file_page->file, page->frame->kva, file_page->read_bytes, file_page->offset);
+        sys_file_lock_release ();
+
+        /* dirty bit 지움 */
+        pml4_set_dirty (curr->pml4, page->va, false);
+    }
+
+    if (page->frame != NULL) {
+        if (should_free) {
+            vm_remove_frame_from_table (page->frame);
+            palloc_free_page (page->frame->kva);
+            free (page->frame);
+        }
+
+        pml4_clear_page (page->p_thread->pml4, page->va);
+
+        page->frame = NULL;
+    }
+
+    /* file_close */
+    if (file_page->file != NULL) {
+        sys_file_lock_acquire (); 
+        file_close (file_page->file);
+        sys_file_lock_release ();
+    }
 }
 
 /* Do the mmap */
 void *
 do_mmap (void *addr, size_t length, int writable,
 		struct file *file, off_t offset) {
+    /* read_bytes, zero_bytes 계산 */
+    uint32_t read_bytes = file_length(file) - offset;
+
+	read_bytes = (read_bytes > length) ? length : read_bytes;
+
+    uint32_t zero_bytes = pg_round_up(addr + length) - (addr + read_bytes);
+
+    if (!load_segment_from_file(file, offset, addr, read_bytes, zero_bytes, writable)) {
+        return NULL;
+    }
+    
+    return addr;
 }
 
 /* Do the munmap */
 void
 do_munmap (void *addr) {
+    struct thread *curr = thread_current ();
+    struct page *head_page = spt_find_page (&curr->spt, addr);
+
+    if (head_page == NULL) return;
+
+    /* unmap할 페이지 뭉치 개수 */
+    size_t num_page = head_page->file.num_page;
+
+    /* 반복문 돌면서 spt_remove_page */
+    for (size_t i = 0; i < num_page; i++) {
+        void *curr_addr = addr + (i * PGSIZE);
+        struct page *page = spt_find_page (&curr->spt, curr_addr);
+
+        if (page != NULL) {
+            /* spt 지우면서 page->operations->destroy (file_backed_destroy)호출 */
+            spt_remove_page (&curr->spt, page);
+        }
+    }
 }

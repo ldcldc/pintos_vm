@@ -2,6 +2,7 @@
 #define VM_VM_H
 #include <stdbool.h>
 #include "threads/palloc.h"
+#include <hash.h>
 
 enum vm_type {
 	/* page not initialized */
@@ -33,6 +34,18 @@ enum vm_type {
 
 struct page_operations;
 struct thread;
+/* lazy_load_segment에서 사용할 aux */
+struct segment_aux {
+	struct file *file; 			/* 읽어올 파일 */
+	off_t offset; 				/* 오프셋 */
+	size_t page_read_bytes; 	/* 파일에서 실제 읽어올 크기 (<= 4096) */
+	size_t page_zero_bytes; 	/* 0초기화할 읽고 남은 크기 */
+	size_t num_page 			/* 이 파일에서 읽어올 페이지 수(첫 페이지만 값 넣고 나머진 0) */
+};
+
+extern struct list frame_list;
+extern struct lock frame_lock;
+extern struct list_elem *curr_frame_elem;
 
 #define VM_TYPE(type) ((type) & 7)
 
@@ -42,10 +55,15 @@ struct thread;
  * DO NOT REMOVE/MODIFY PREDEFINED MEMBER OF THIS STRUCTURE. */
 struct page {
 	const struct page_operations *operations;
-	void *va;              /* Address in terms of user space */
-	struct frame *frame;   /* Back reference for frame */
+	void *va;              		/* Address in terms of user space */
+	struct frame *frame;   		/* Back reference for frame */
 
-	/* Your implementation */
+ 	struct list_elem cow_elem;	/* frame에 들어갈 cow용 elem */
+	struct hash_elem hash_elem; /* hash_elem */
+
+	struct thread * p_thread;	/* 이 page가 속한 thread */
+
+	bool writable;				/* writable == false => only readable */
 
 	/* Per-type data are binded into the union.
 	 * Each function automatically detects the current union */
@@ -56,13 +74,16 @@ struct page {
 #ifdef EFILESYS
 		struct page_cache page_cache;
 #endif
-	};
+	};		
 };
 
 /* The representation of "frame" */
 struct frame {
 	void *kva;
 	struct page *page;
+	struct list_elem frame_elem;
+	struct list page_list;			/* 이 frame을 공유하는 page list(cow) */
+	bool no_evict;					/* true면 CLOCK의 eviction 후보에서 제외 */
 };
 
 /* The function table for page operations.
@@ -85,6 +106,7 @@ struct page_operations {
  * We don't want to force you to obey any specific design for this struct.
  * All designs up to you for this. */
 struct supplemental_page_table {
+	struct hash hash;
 };
 
 #include "threads/thread.h"
@@ -100,6 +122,7 @@ void spt_remove_page (struct supplemental_page_table *spt, struct page *page);
 void vm_init (void);
 bool vm_try_handle_fault (struct intr_frame *f, void *addr, bool user,
 		bool write, bool not_present);
+bool vm_claim_if_valid (struct page *page, void *addr, void *rsp, bool write);
 
 #define vm_alloc_page(type, upage, writable) \
 	vm_alloc_page_with_initializer ((type), (upage), (writable), NULL, NULL)
@@ -108,5 +131,6 @@ bool vm_alloc_page_with_initializer (enum vm_type type, void *upage,
 void vm_dealloc_page (struct page *page);
 bool vm_claim_page (void *va);
 enum vm_type page_get_type (struct page *page);
+void vm_remove_frame_from_table (struct frame *frame);
 
 #endif  /* VM_VM_H */
